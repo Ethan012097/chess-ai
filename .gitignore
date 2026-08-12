@@ -1,0 +1,14 @@
+# 資料與訓練產物一律不進 git
+data/
+models/
+logs/
+bin/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# 執行時產生的雜物
+*.log
+.venv*/

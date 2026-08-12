@@ -1,0 +1,120 @@
+# 西洋棋 AI 的所有超參數集中在這個檔案。
+# 修改這裡就好，不要去改程式碼裡的預設值。
+# 命令列參數（例如 --preset small）會覆寫這裡的設定。
+
+device: auto                   # auto / cuda / cpu
+preset: base                   # small / base / large，見下方 presets 區塊
+seed: 42
+
+# ---------------------------------------------------------------------------
+# preset：依顯示卡 VRAM 選一個。用 `--preset small` 之類的參數切換。
+#   small : 4–6 GB VRAM（例如 RTX 3060 Laptop 6GB）
+#   base  : 8–12 GB VRAM（預設）
+#   large : 16 GB 以上
+# preset 會覆寫 model.channels / model.blocks / train.batch_size
+# ---------------------------------------------------------------------------
+presets:
+  small:
+    channels: 96
+    blocks: 8
+    batch_size: 512
+  base:
+    channels: 128
+    blocks: 10
+    batch_size: 1024
+  large:
+    channels: 192
+    blocks: 14
+    batch_size: 1536
+
+model:
+  channels: 128                # 由 preset 覆寫
+  blocks: 10                   # 由 preset 覆寫
+  value_head_channels: 8       # value head 的 1x1 conv 輸出通道數
+  value_hidden: 256            # value head 的隱藏層寬度
+
+train:
+  batch_size: 1024             # 由 preset 覆寫
+  epochs: 12
+  optimizer: adamw
+  lr: 2.0e-3                   # batch 較大，lr 也跟著放大
+  weight_decay: 1.0e-4
+  scheduler: cosine            # warmup 後 cosine 降到 lr * lr_final_factor
+  warmup_steps: 1000
+  lr_final_factor: 0.05
+  grad_clip: 1.0
+  value_weight: 1.0
+  amp: true                    # 自動選 bf16 / fp16
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  log_every: 100               # steps
+  eval_every: 5000             # steps，跑 val 子集
+  eval_batches: 50             # 期中評估要跑幾個 val batch
+  checkpoint_every: 1          # epochs
+  soft_targets: false          # Phase 2 用：policy target 改吃 4672 維機率向量
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  train_file: data/processed/train.npy
+  val_file: data/processed/val.npy
+  val_ratio: 0.02              # 依「棋局」切分，不是依盤面
+  # --- 棋局篩選 ---
+  # elite 來源本身已經篩過（2500+ 對上 2300+、且排除 bullet），比這裡嚴格得多，
+  # 所以這道檢查對 elite 來說一定會通過 —— 它是留給 lichess 官方原始檔用的
+  # 安全網（那份完全沒篩選，什麼分數都有）。
+  min_elo: 2000
+  min_time_control_seconds: 180   # 排除 bullet
+  min_game_plies: 20
+  max_game_plies: 300
+  # --- 盤面取樣 ---
+  skip_opening_plies: 8        # 跳過前 8 步
+  skip_ending_plies: 2         # 跳過最後 2 步
+  max_positions_per_game: 40
+  shard_size: 1000000          # 每個 shard 的盤面數（支援中斷續跑）
+
+search:
+  temperature: 0.0             # 0 = argmax，>0 = 依機率抽樣
+  top_k: 5                     # 送子檢查：對 policy 前 k 名做 depth-2 檢查
+  use_mate_check: true         # 一步將死檢查
+  use_lookahead: true          # 送子檢查（depth-2 極小化極大）
+
+eval:
+  stockfish_path: bin/stockfish.exe
+  match_games: 100
+  baseline_games: 200
+  random_opening_plies: 4      # 開局隨機前 4 步製造變化
+  skill_levels: [0, 3, 5]
+  engine_movetime_ms: 100
+  # --- cutechess-cli（--mode tournament / sprt 用）---
+  # 免安裝可攜版，從 https://github.com/cutechess/cutechess/releases 抓 win64.zip
+  # 解壓到 bin/ 即可（bin/ 已被 .gitignore 排除）
+  cutechess_path: bin/cutechess-1.5.1-win64/cutechess-cli.exe
+  engine_bat: engine.bat            # GUI / cutechess 啟動本專案引擎的包裝檔
+  openings_file: data/openings.pgn  # 用 scripts/make_openings.py 產生
+  tournament_rounds: 100            # 每輪 2 局（先後手各一），所以總局數是 2 倍
+  time_control: "10+0.1"            # 每方 10 秒 + 每步 0.1 秒增秒
+  concurrency: 2                    # 同時跑幾局。每個實例都會載一份模型到 GPU，
+                                    # 設太高會 OOM
+  # --- SPRT（--mode sprt 用）---
+  sprt_elo0: 0                      # 虛無假設：沒有比較強
+  sprt_elo1: 20                     # 對立假設：強 20 Elo 以上
+  sprt_alpha: 0.05
+  sprt_beta: 0.05
+
+# ---------------------------------------------------------------------------
+# 以下兩個區塊是 Phase 2（MCTS + 自我對弈）預留的，Phase 1 完全不會讀取。
+# ---------------------------------------------------------------------------
+mcts:
+  simulations: 800
+  c_puct: 1.5
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+  temperature_moves: 30        # 前 30 步用 temperature=1 取樣，之後用 argmax
+
+selfplay:
+  games_per_iteration: 500
+  replay_buffer_size: 500000
+  resign_threshold: -0.9
+  num_workers: 4

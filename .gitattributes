@@ -1,0 +1,15 @@
+# 統一換行符號，避免在 Windows 與其他平台之間來回時整個檔案被標成「已修改」。
+# text=auto：git 內部一律存 LF，簽出時依平台轉換。
+* text=auto
+
+# 這幾種一定要 CRLF，否則在 Windows 上會壞掉
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二進位檔不要做任何轉換
+*.pt   binary
+*.npy  binary
+*.png  binary
+*.zip  binary
+*.zst  binary
+*.exe  binary

@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chess-ai 網頁棋盤</title>
+
+<!--
+  規格 §4.1：刻意保持簡單。
+  沒有 npm、沒有 webpack、沒有 React，全部前端程式碼就在這一個檔裡。
+  chessboard.js（顯示）、chess.js（合法性）、jQuery（chessboard.js 的相依）都從 CDN 載入。
+  理由：這是展示品，不是產品。任何建置步驟都會變成三個月後想重跑時的障礙。
+
+  視角約定：後端已經把所有東西轉好了，前端**只認 value_white**，不做任何加減號。
+-->
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+
+<style>
+  :root {
+    --bg:        #14161a;
+    --panel:     #1d2026;
+    --panel-2:   #23262e;
+    --line:      #31353f;
+    --text:      #e6e8ec;
+    --muted:     #949aa6;
+    --accent:    #4a90e2;
+    --good:      #5fbf6a;
+    --bad:       #d9605a;
+    --board-size: 560px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    font-size: 14px;
+  }
+  header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  #health { color: var(--muted); font-size: 12px; font-family: Consolas, monospace; }
+
+  nav { display: flex; gap: 6px; padding: 12px 20px 0; }
+  nav button {
+    background: var(--panel); color: var(--muted);
+    border: 1px solid var(--line); border-bottom: none;
+    padding: 8px 18px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 14px;
+  }
+  nav button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+
+  main {
+    display: flex; gap: 18px; padding: 18px 20px;
+    align-items: flex-start; flex-wrap: wrap;
+  }
+
+  /* --- 評估條（規格 §4.3：寬 30px，白色部分高度 =(value_white+1)/2）--- */
+  .eval-column { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  #eval-cp, #turn-line {
+    font-family: Consolas, monospace; font-size: 13px;
+    height: 18px; line-height: 18px; margin-bottom: 6px;
+  }
+  #turn-line { color: var(--muted); }
+  .eval-column #eval-cp { margin-bottom: 0; }
+  #eval-bar {
+    width: 30px; height: var(--board-size);
+    background: #2b2f37; border: 1px solid var(--line); border-radius: 3px;
+    position: relative; overflow: hidden;
+  }
+  #eval-white {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: #eceef2; height: 50%; transition: height .35s ease;
+  }
+  #eval-mid {
+    position: absolute; left: 0; right: 0; top: 50%;
+    border-top: 1px dashed #8a90a0; pointer-events: none;
+  }
+  .eval-label { color: var(--muted); font-size: 11px; }
+
+  /* --- 棋盤與箭頭疊層 --- */
+  #board-wrap { position: relative; width: var(--board-size); }
+  #board { width: var(--board-size); }
+  #arrows {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    pointer-events: none;   /* 箭頭不能擋住拖曳 */
+  }
+  #status { margin-top: 8px; min-height: 20px; color: var(--muted); }
+  #status.over { color: var(--good); font-weight: 600; }
+
+  /* --- 右側資訊面板 --- */
+  aside { flex: 1; min-width: 300px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card h2 {
+    font-size: 12px; margin: 0 0 8px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+  .row label { color: var(--muted); min-width: 84px; }
+  input[type=range] { flex: 1; min-width: 110px; }
+  button.act {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 5px; cursor: pointer;
+  }
+  button.act:hover { border-color: var(--accent); }
+  button.act:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  #moves { max-height: 220px; overflow-y: auto; font-family: Consolas, monospace; font-size: 13px; }
+  #moves table { width: 100%; border-collapse: collapse; }
+  #moves td { padding: 2px 4px; }
+  #moves td.num { color: var(--muted); width: 34px; text-align: right; }
+  #moves span.ply { cursor: pointer; padding: 1px 5px; border-radius: 3px; display: inline-block; min-width: 56px; }
+  #moves span.ply:hover { background: var(--panel-2); }
+  #moves span.ply.current { background: var(--accent); color: #fff; }
+  #moves .ev { color: var(--muted); font-size: 11px; }
+
+  textarea, input[type=text] {
+    width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px; padding: 6px;
+    font-family: Consolas, monospace; font-size: 12px;
+  }
+  #cand { font-family: Consolas, monospace; font-size: 12px; line-height: 1.6; }
+  #cand .bar { display: inline-block; height: 8px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+  #banner {
+    display: none; margin: 0 20px; padding: 10px 14px;
+    background: #4a2020; border: 1px solid var(--bad); border-radius: 6px; color: #ffd9d6;
+  }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .mode-only { display: none; }
+
+  /* 筆電螢幕放不下 560px 棋盤 + 面板時縮小一號 */
+  @media (max-width: 1080px) { :root { --board-size: 440px; } }
+  @media (max-width: 780px)  { :root { --board-size: 340px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>chess-ai 網頁棋盤</h1>
+  <span id="health">載入中…</span>
+</header>
+
+<div id="banner"></div>
+
+<nav>
+  <button data-mode="play"    class="active">對弈</button>
+  <button data-mode="auto">自動播放</button>
+  <button data-mode="analyse">分析</button>
+</nav>
+
+<main>
+  <!-- 評估條：白色部分高度 =(value_white+1)/2，中間有 50% 參考線 -->
+  <div class="eval-column">
+    <div id="eval-cp">0.00</div>
+    <div id="eval-bar">
+      <div id="eval-white"></div>
+      <div id="eval-mid"></div>
+    </div>
+    <div class="eval-label">白方</div>
+  </div>
+
+  <div>
+    <!-- 這一行跟評估條上方的 cp 等高，兩欄的頂端才會對齊 -->
+    <div id="turn-line">準備中…</div>
+    <div id="board-wrap">
+      <div id="board"></div>
+      <svg id="arrows"></svg>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <aside>
+    <div class="card">
+      <h2 id="arrow-title">Policy 機率</h2>
+      <div id="cand" class="hint">尚未分析。</div>
+      <div class="row">
+        <label>箭頭數量</label>
+        <input type="range" id="topk" min="1" max="8" value="5">
+        <span id="topk-val">5</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>控制</h2>
+      <!-- 對弈模式 -->
+      <div class="mode-only" data-for="play">
+        <div class="row">
+          <button class="act primary" id="btn-new">新的一局</button>
+          <button class="act" id="btn-flip">換邊（AI 先走）</button>
+          <button class="act" id="btn-undo">悔棋</button>
+        </div>
+        <div class="hint">拖曳棋子走棋。AI 落子前會先把箭頭停留 800 ms，讓你看見它在考慮什麼。</div>
+      </div>
+      <!-- 自動播放模式 -->
+      <div class="mode-only" data-for="auto">
+        <div class="row">
+          <button class="act primary" id="btn-auto">▶ 播放</button>
+          <button class="act" id="btn-step">單步</button>
+          <button class="act" id="btn-auto-reset">重設</button>
+        </div>
+        <div class="row">
+          <label>每步間隔</label>
+          <input type="range" id="delay" min="200" max="4000" step="100" value="1500">
+          <span id="delay-val">1500 ms</span>
+        </div>
+        <div class="hint">AI 自我對弈。想看不一樣的棋路就把下面的「隨機性」拉上去。</div>
+      </div>
+      <!-- 分析模式 -->
+      <div class="mode-only" data-for="analyse">
+        <textarea id="fen-input" rows="2" placeholder="貼上 FEN，例如 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></textarea>
+        <div class="row">
+          <button class="act primary" id="btn-load-fen">載入並分析</button>
+          <button class="act" id="btn-start-fen">起始盤面</button>
+        </div>
+        <div class="hint">分析模式只看不走棋。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>搜尋方式</h2>
+      <div class="row">
+        <label><input type="checkbox" id="use-mcts"> 使用 MCTS</label>
+        <input type="text" id="sims" value="400" style="width:70px" title="每步模擬次數">
+        <button class="act" id="btn-apply-search">套用</button>
+      </div>
+      <div class="row">
+        <label>隨機性</label>
+        <input type="range" id="temp" min="0" max="150" step="5" value="0">
+        <span id="temp-val">0.00</span>
+      </div>
+      <div class="hint" style="margin-bottom:8px">
+        隨機性 &gt; 0 時依機率抽樣，每一局都會不一樣；0 是完全照最高分走（對局與自動播放都適用）。
+      </div>
+      <div class="hint">
+        policy 是「直覺想走哪裡」，MCTS 訪問次數是「想過之後認為哪裡值得」。
+        兩者意義不同，箭頭上方的標題會標明目前顯示哪一種。
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>著法</h2>
+      <div id="moves" class="hint">還沒有著法。</div>
+      <div class="row">
+        <button class="act" id="btn-latest">回到最新</button>
+        <button class="act" id="btn-pgn">匯出 PGN</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>FEN</h2>
+      <input type="text" id="fen-out" readonly>
+      <div class="row">
+        <button class="act" id="btn-copy-fen">複製 FEN</button>
+        <span id="copy-msg" class="hint"></span>
+      </div>
+    </div>
+
+    <div class="card" id="pgn-card" style="display:none">
+      <h2>PGN（可直接貼到 lichess.org/paste）</h2>
+      <textarea id="pgn-out" rows="8" readonly></textarea>
+      <div class="row">
+        <button class="act" id="btn-copy-pgn">複製</button>
+        <button class="act" id="btn-download-pgn">下載 .pgn</button>
+        <button class="act" id="btn-close-pgn">關閉</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// 常數
+// ---------------------------------------------------------------------------
+
+// 棋盤圖片也從 CDN 載（cdnjs 沒有放圖，所以改用 jsDelivr 的 GitHub 鏡像）
+var PIECE_THEME =
+  "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@v1.0.0/website/img/chesspieces/wikipedia/{piece}.png";
+
+var ARROW_DWELL_MS = 800;   // 規格 §4.3：AI 落子前先讓箭頭停留 800 ms
+var LABEL_MIN_PROB = 0.03;  // 機率低於這個值就不標百分比，避免擠成一團
+var API_TOP_K = 8;          // 一律跟後端要 8 個候選，滑桿只影響「畫幾條」，不用重新請求
+var SVG_NS = "http://www.w3.org/2000/svg";
+
+// ---------------------------------------------------------------------------
+// 狀態
+// ---------------------------------------------------------------------------
+
+var state = {
+  mode: "play",
+  game: null,          // chess.js 實例：負責拖曳合法性、SAN、悔棋
+  board: null,         // chessboard.js 實例：只負責畫
+  history: [],         // 每一步的完整紀錄，匯出 PGN 時原封不動送回後端
+  current: null,       // 目前盤面的分析結果
+  viewPly: null,       // null = 看最新盤面；數字 = 正在回顧第 n 步之前的盤面
+  topK: 5,
+  temperature: 0,
+  autoDelay: 1500,
+  autoRunning: false,
+  humanColor: "w",
+  busy: false,
+  source: "policy",
+};
+
+// ---------------------------------------------------------------------------
+// 小工具
+// ---------------------------------------------------------------------------
+
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+function $id(id) { return document.getElementById(id); }
+
+function showBanner(text) {
+  var el = $id("banner");
+  el.textContent = text;
+  el.style.display = "block";
+}
+
+async function api(path, body) {
+  var opts = { method: "GET" };
+  if (body !== undefined) {
+    opts = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  }
+  var res = await fetch(path, opts);
+  if (!res.ok) {
+    var detail = "";
+    try { detail = (await res.json()).detail || ""; } catch (e) { detail = res.statusText; }
+    throw new Error(path + " 失敗（" + res.status + "）：" + detail);
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// 箭頭（規格 §4.3）
+// ---------------------------------------------------------------------------
+
+// 用實際的 DOM 方格算座標，而不是自己算格子大小：
+// 這樣棋盤翻面（orientation=black）時完全不用改公式，也不怕邊框差幾個 px。
+function squareCenter(square, wrapRect) {
+  var el = document.querySelector("#board .square-" + square);
+  if (!el) { return null; }
+  var r = el.getBoundingClientRect();
+  return {
+    x: r.left - wrapRect.left + r.width / 2,
+    y: r.top - wrapRect.top + r.height / 2,
+    size: r.width
+  };
+}
+
+function clearArrows() {
+  var svg = $id("arrows");
+  while (svg.firstChild) { svg.removeChild(svg.firstChild); }
+}
+
+function drawArrows(moves) {
+  clearArrows();
+  if (!moves || !moves.length) { return; }
+
+  var wrap = $id("board-wrap").getBoundingClientRect();
+  var svg = $id("arrows");
+  var shown = moves.slice(0, state.topK);
+
+  // 由細到粗畫，讓最粗（機率最高）的那條疊在最上面
+  shown.slice().reverse().forEach(function (m, revIndex) {
+    var isBest = (revIndex === shown.length - 1);
+    drawOneArrow(svg, wrap, m, isBest);
+  });
+}
+
+function drawOneArrow(svg, wrap, m, isBest) {
+  var from = squareCenter(m.uci.slice(0, 2), wrap);
+  var to = squareCenter(m.uci.slice(2, 4), wrap);
+  if (!from || !to) { return; }
+
+  var p = Math.max(0, Math.min(1, m.prob));
+  // 用 sqrt 不用線性：線性的話 3% 的著法會細到看不見，
+  // 但那些正是你想觀察的（規格 §4.3）
+  var width = 4 + 20 * Math.sqrt(p) + (isBest ? 4 : 0);   // 最佳著法額外加粗一級
+  var opacity = 0.35 + 0.55 * p;
+  // 同一色相的深淺變化。用不同顏色會讓人誤以為代表不同類別。
+  var color = "hsl(212, 82%, " + Math.round(66 - 34 * Math.sqrt(p)) + "%)";
+
+  var dx = to.x - from.x, dy = to.y - from.y;
+  var len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1) { return; }
+  var ux = dx / len, uy = dy / len;
+
+  var head = width * 2.0;             // 箭頭三角形的長度
+  var halfHead = width * 1.35;
+  var gap = to.size * 0.14;           // 尾端留一點空隙，箭頭不要蓋滿整格
+  var tipX = to.x - ux * gap, tipY = to.y - uy * gap;
+  var baseX = tipX - ux * head, baseY = tipY - uy * head;
+  var startX = from.x + ux * to.size * 0.18, startY = from.y + uy * to.size * 0.18;
+
+  var shaft = document.createElementNS(SVG_NS, "line");
+  shaft.setAttribute("x1", startX); shaft.setAttribute("y1", startY);
+  shaft.setAttribute("x2", baseX);  shaft.setAttribute("y2", baseY);
+  shaft.setAttribute("stroke", color);
+  shaft.setAttribute("stroke-width", width);
+  shaft.setAttribute("stroke-linecap", "round");
+  shaft.setAttribute("opacity", opacity);
+  svg.appendChild(shaft);
+
+  var tri = document.createElementNS(SVG_NS, "polygon");
+  tri.setAttribute("points", [
+    tipX + "," + tipY,
+    (baseX - uy * halfHead) + "," + (baseY + ux * halfHead),
+    (baseX + uy * halfHead) + "," + (baseY - ux * halfHead)
+  ].join(" "));
+  tri.setAttribute("fill", color);
+  tri.setAttribute("opacity", opacity);
+  svg.appendChild(tri);
+
+  if (p >= LABEL_MIN_PROB) {
+    var midX = (startX + tipX) / 2, midY = (startY + tipY) / 2;
+    var text = document.createElementNS(SVG_NS, "text");
+    text.setAttribute("x", midX);
+    text.setAttribute("y", midY + 4);
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("font-size", "12");
+    text.setAttribute("font-weight", "700");
+    text.setAttribute("font-family", "Consolas, monospace");
+    text.setAttribute("fill", "#fff");
+    text.setAttribute("stroke", "rgba(0,0,0,.75)");
+    text.setAttribute("stroke-width", "3");
+    text.setAttribute("paint-order", "stroke");   // 先描邊再填色，字才看得清楚
+    text.textContent = Math.round(p * 100) + "%";
+    svg.appendChild(text);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 畫面更新
+// ---------------------------------------------------------------------------
+
+function updateEval(res) {
+  // 前端只認 value_white，視角轉換全部在後端做完了
+  var vw = res ? res.value_white : 0;
+  $id("eval-white").style.height = ((vw + 1) / 2 * 100).toFixed(1) + "%";
+  var cp = res ? res.cp : 0;
+  $id("eval-cp").textContent = (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
+  $id("eval-cp").style.color = cp > 30 ? "#eceef2" : (cp < -30 ? "#9aa0ad" : "var(--muted)");
+}
+
+function updateCandidates(res) {
+  var el = $id("cand");
+  $id("arrow-title").textContent =
+    (res && res.source === "mcts") ? "MCTS 訪問次數" : "Policy 機率";
+  if (!res || !res.moves || !res.moves.length) {
+    el.textContent = res && res.is_game_over ? "對局已結束。" : "尚未分析。";
+    return;
+  }
+  var html = "";
+  res.moves.slice(0, state.topK).forEach(function (m, i) {
+    var pct = (m.prob * 100).toFixed(1);
+    var extra = (m.visits !== null && m.visits !== undefined) ? " <span class='ev'>N=" + m.visits + "</span>" : "";
+    html += "<div>" + (i + 1) + ". <b>" + m.san + "</b> " + pct + "%" +
+            " <span class='bar' style='width:" + Math.max(2, m.prob * 120) + "px'></span>" + extra + "</div>";
+  });
+  if (res.best) {
+    var top = res.moves[0];
+    if (top && res.best.uci !== top.uci) {
+      // 送子檢查改變了決定 —— 這正是它存在的意義，值得標出來
+      html += "<div style='margin-top:6px;color:var(--good)'>實際走：<b>" + res.best.san +
+              "</b>（送子檢查否決了 " + top.san + "）</div>";
+    }
+  }
+  el.innerHTML = html;
+}
+
+function updateMoveList() {
+  var el = $id("moves");
+  if (!state.history.length) {
+    el.className = "hint";
+    el.textContent = "還沒有著法。";
+    return;
+  }
+  el.className = "";
+  var rows = "";
+  for (var i = 0; i < state.history.length; i += 2) {
+    rows += "<tr><td class='num'>" + (i / 2 + 1) + ".</td>";
+    for (var j = 0; j < 2; j++) {
+      var h = state.history[i + j];
+      if (!h) { rows += "<td></td>"; continue; }
+      var idx = i + j;
+      var cls = (state.viewPly === idx) ? "ply current" : "ply";
+      rows += "<td><span class='" + cls + "' data-ply='" + idx + "'>" + h.san + "</span>" +
+              " <span class='ev'>" + (h.cp >= 0 ? "+" : "") + (h.cp / 100).toFixed(2) +
+              " · " + (h.elapsed_ms / 1000).toFixed(2) + "s</span></td>";
+    }
+    rows += "</tr>";
+  }
+  el.innerHTML = "<table>" + rows + "</table>";
+  el.querySelectorAll("span.ply").forEach(function (sp) {
+    sp.addEventListener("click", function () { viewPly(parseInt(sp.dataset.ply, 10)); });
+  });
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, isOver) {
+  var el = $id("status");
+  el.textContent = text;
+  el.className = isOver ? "over" : "";
+}
+
+function updateTurnLine() {
+  var ply = state.history.length;
+  var who = state.game.turn() === "w" ? "白方" : "黑方";
+  var text = "第 " + (Math.floor(ply / 2) + 1) + " 回合 · 輪到" + who;
+  if (state.mode === "play") { text += (state.game.turn() === state.humanColor ? "（你）" : "（AI）"); }
+  if (state.game.game_over()) { text = "對局結束"; }
+  $id("turn-line").textContent = text;
+}
+
+function renderPosition() {
+  state.board.position(state.game.fen());   // 有動畫，自動播放時比較好看
+  $id("fen-out").value = state.game.fen();
+  updateMoveList();
+  updateTurnLine();
+}
+
+// ---------------------------------------------------------------------------
+// 與後端往來
+// ---------------------------------------------------------------------------
+
+async function analyseCurrent() {
+  var res = await api("/api/analyse", {
+    fen: state.game.fen(),
+    top_k: API_TOP_K,
+    temperature: state.temperature
+  });
+  state.current = res;
+  state.source = res.source;
+  drawArrows(res.moves);
+  updateEval(res);
+  updateCandidates(res);
+  if (res.is_game_over) {
+    setStatus("對局結束：" + res.result + "（" + res.result_reason + "）", true);
+  }
+  return res;
+}
+
+// 把一步棋記進歷史。`analysis` 是**走這步之前**那個盤面的分析結果。
+function recordHistory(uci, san, analysis) {
+  var hasVisits = analysis && analysis.moves.length &&
+                  analysis.moves[0].visits !== null && analysis.moves[0].visits !== undefined;
+  state.history.push({
+    uci: uci,
+    san: san,
+    // value 是走棋方視角、value_white / cp 是白方視角 —— 跟 MoveInfo 的約定一致
+    value: analysis ? analysis.value : 0,
+    value_white: analysis ? analysis.value_white : 0,
+    cp: analysis ? analysis.cp : 0,
+    policy_top: analysis ? analysis.moves.map(function (m) { return [m.uci, m.prob]; }) : [],
+    visits: hasVisits
+      ? analysis.moves.reduce(function (acc, m) { acc[m.uci] = m.visits; return acc; }, {})
+      : null,
+    elapsed_ms: analysis ? analysis.elapsed_ms : 0
+  });
+  state.viewPly = null;
+  state.current = null;
+}
+
+// AI 走一步。合法性以後端（python-chess）為準，前端的 chess.js 只是為了拖曳時能即時回饋。
+async function applyMove(uci, analysis) {
+  var res = await api("/api/move", { fen: state.game.fen(), uci: uci });
+  if (!res.legal) {
+    // 理論上不會走到這裡。真的發生就以後端為準重新同步，盤面不會進入錯誤狀態。
+    setStatus("後端判定這步不合法（" + res.reason + "），已重新同步盤面。");
+    state.board.position(res.fen, false);
+    return null;
+  }
+
+  state.game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || "q" });
+  recordHistory(uci, res.san, analysis);
+  renderPosition();
+  if (res.is_game_over) {
+    setStatus("對局結束：" + res.result + "（" + res.result_reason + "）", true);
+  }
+  return res;
+}
+
+// AI 走一步：先分析 → 箭頭停留 dwell 毫秒 → 落子
+async function aiStep(dwellMs) {
+  if (state.busy) { return false; }
+  state.busy = true;
+  try {
+    var res = state.current || await analyseCurrent();
+    if (res.is_game_over) { return false; }
+    setStatus("AI 思考中…（" + res.best.san + "）");
+    await sleep(dwellMs);
+    await applyMove(res.best.uci, res);
+    return true;
+  } catch (err) {
+    showBanner(err.message);
+    return false;
+  } finally {
+    state.busy = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 三種模式
+// ---------------------------------------------------------------------------
+
+function isGameOver() { return state.game.game_over(); }
+
+async function afterMove() {
+  if (state.mode === "analyse") { return; }
+  if (isGameOver()) { await analyseCurrent(); return; }
+
+  if (state.mode === "play") {
+    if (state.game.turn() === state.humanColor) {
+      await analyseCurrent();          // 順便讓你看到 AI 建議你走哪裡
+      setStatus("輪到你了，拖曳棋子走棋。");
+    } else {
+      await aiStep(ARROW_DWELL_MS);
+      await afterMove();
+    }
+  }
+}
+
+async function autoLoop() {
+  while (state.autoRunning && !isGameOver()) {
+    var ok = await aiStep(state.autoDelay);
+    if (!ok) { break; }
+  }
+  state.autoRunning = false;
+  $id("btn-auto").textContent = "▶ 播放";
+  if (isGameOver()) { await analyseCurrent(); }
+}
+
+function viewPly(ply) {
+  // 回顧第 ply 步：顯示「走那步之前」的盤面，配上當時記下的箭頭
+  var tmp = new Chess();
+  for (var i = 0; i < ply; i++) { tmp.move({ from: state.history[i].uci.slice(0, 2), to: state.history[i].uci.slice(2, 4), promotion: state.history[i].uci.slice(4) || "q" }); }
+  state.viewPly = ply;
+  state.board.position(tmp.fen(), false);
+  $id("fen-out").value = tmp.fen();
+
+  var h = state.history[ply];
+  drawArrows(h.policy_top.map(function (pair) {
+    return { uci: pair[0], prob: pair[1], san: pair[0], visits: null };
+  }));
+  // 當時記下來的 value_white / cp 已經是白方視角，直接用
+  updateEval({ value_white: h.value_white, cp: h.cp });
+  updateMoveList();
+  setStatus("正在回顧第 " + (ply + 1) + " 手（" + h.san + "）。按「回到最新」繼續對局。");
+}
+
+function backToLatest() {
+  state.viewPly = null;
+  renderPosition();
+  if (state.current) {
+    drawArrows(state.current.moves);
+    updateEval(state.current);
+  } else {
+    analyseCurrent().catch(function (e) { showBanner(e.message); });
+  }
+  setStatus(isGameOver() ? "對局已結束。" : "");
+}
+
+// ---------------------------------------------------------------------------
+// 棋盤事件
+// ---------------------------------------------------------------------------
+
+function onDragStart(source, piece) {
+  if (state.mode === "analyse") { return false; }
+  if (state.busy || state.autoRunning) { return false; }
+  if (state.viewPly !== null) { return false; }   // 回顧歷史時不能走棋
+  if (isGameOver()) { return false; }
+  if (state.mode === "auto") { return false; }
+  // 只能動自己顏色的棋子
+  if (piece[0] !== state.game.turn()) { return false; }
+  if (state.mode === "play" && state.game.turn() !== state.humanColor) { return false; }
+  return true;
+}
+
+function onDrop(source, target) {
+  // chessboard.js 要求**同步**回答這步能不能放，沒辦法等後端回應，
+  // 所以這裡用 chess.js 立刻判斷（非法就 snapback，棋子彈回去）；
+  // 之後 humanMove 還會再讓後端確認一次（後端才是權威）。
+  var legal = state.game.moves({ verbose: true }).filter(function (m) {
+    return m.from === source && m.to === target;
+  })[0];
+  if (!legal) { return "snapback"; }
+
+  // 升變一律升后。網頁上不做選擇介面，這是 99.9% 的情況。
+  var uci = source + target + (legal.promotion ? "q" : "");
+  var fenBefore = state.game.fen();
+  // 走這步「之前」的分析。人類走的那幾步也要有評分，PGN 的曲線才不會忽高忽低。
+  var pre = state.current;
+  // 先在前端生效，onSnapEnd 才不會把棋子彈回舊位置（等後端回來再閃一下很難看）
+  state.game.move({ from: source, to: target, promotion: "q" });
+  humanMove(uci, fenBefore, pre);
+  return true;
+}
+
+async function humanMove(uci, fenBefore, analysis) {
+  state.busy = true;
+  try {
+    var res = await api("/api/move", { fen: fenBefore, uci: uci });
+    if (!res.legal) {
+      // chess.js 與 python-chess 對合法性的判斷不一致（理論上不會發生）。
+      // 以後端為準：把前端剛才那步撤回。
+      state.game.undo();
+      renderPosition();
+      setStatus("後端判定這步不合法（" + res.reason + "），已還原。");
+      return;
+    }
+    recordHistory(uci, res.san, analysis);
+    renderPosition();
+    if (res.is_game_over) {
+      setStatus("對局結束：" + res.result + "（" + res.result_reason + "）", true);
+    }
+  } catch (err) {
+    showBanner(err.message);
+  } finally {
+    state.busy = false;
+  }
+  await afterMove();
+}
+
+// ---------------------------------------------------------------------------
+// 介面事件
+// ---------------------------------------------------------------------------
+
+function setMode(mode) {
+  state.mode = mode;
+  state.autoRunning = false;
+  $id("btn-auto").textContent = "▶ 播放";
+  document.querySelectorAll("nav button").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+  document.querySelectorAll(".mode-only").forEach(function (d) {
+    d.style.display = (d.dataset.for === mode) ? "block" : "none";
+  });
+  if (mode === "analyse") {
+    // 直接把目前盤面填進去，最常見的用法是「從這裡開始改」
+    if (!$id("fen-input").value.trim()) { $id("fen-input").value = state.game.fen(); }
+    setStatus("分析模式：貼上 FEN 後按「載入並分析」。");
+  } else {
+    setStatus("");
+  }
+}
+
+function newGame(aiFirst) {
+  state.game = new Chess();
+  state.history = [];
+  state.current = null;
+  state.viewPly = null;
+  state.humanColor = aiFirst ? "b" : "w";
+  state.board.orientation(aiFirst ? "black" : "white");
+  clearArrows();
+  renderPosition();
+  updateEval(null);
+  setStatus("");
+  afterMove().catch(function (e) { showBanner(e.message); });
+}
+
+async function exportPgn() {
+  if (!state.history.length) { showBanner("還沒有著法，沒有東西可以匯出。"); return; }
+  try {
+    var res = await api("/api/pgn", {
+      moves: state.history.map(function (h) {
+        return {
+          uci: h.uci, value: h.value, policy_top: h.policy_top,
+          visits: h.visits, elapsed_ms: h.elapsed_ms
+        };
+      }),
+      headers: {
+        Event: state.mode === "auto" ? "web board self-play" : "web board",
+        White: state.mode === "auto" ? "MyNet" : (state.humanColor === "w" ? "Human" : "MyNet"),
+        Black: state.mode === "auto" ? "MyNet" : (state.humanColor === "w" ? "MyNet" : "Human")
+      }
+    });
+    $id("pgn-card").style.display = "block";
+    $id("pgn-out").value = res.pgn;
+  } catch (err) {
+    showBanner(err.message);
+  }
+}
+
+function copyText(text, msg) {
+  navigator.clipboard.writeText(text).then(function () {
+    $id("copy-msg").textContent = msg;
+    setTimeout(function () { $id("copy-msg").textContent = ""; }, 1500);
+  });
+}
+
+async function refreshHealth() {
+  try {
+    var h = await api("/api/health");
+    $id("health").textContent =
+      h.model_path.split(/[\\/]/).pop() + " · " + h.device + " · " +
+      h.params.toLocaleString() + " 參數 · C" + h.channels + "×" + h.blocks +
+      " · 搜尋 " + (h.searcher === "mcts" ? "MCTS " + h.simulations : "policy");
+    $id("use-mcts").checked = (h.searcher === "mcts");
+    if (h.simulations) { $id("sims").value = h.simulations; }
+  } catch (err) {
+    showBanner("無法連上後端：" + err.message);
+  }
+}
+
+function bindUi() {
+  document.querySelectorAll("nav button").forEach(function (b) {
+    b.addEventListener("click", function () { setMode(b.dataset.mode); });
+  });
+
+  $id("topk").addEventListener("input", function (e) {
+    state.topK = parseInt(e.target.value, 10);
+    $id("topk-val").textContent = state.topK;
+    // 一律跟後端要 8 個，所以改滑桿不用重新請求，直接重畫
+    if (state.viewPly !== null) { viewPly(state.viewPly); }
+    else if (state.current) { drawArrows(state.current.moves); updateCandidates(state.current); }
+  });
+
+  $id("delay").addEventListener("input", function (e) {
+    state.autoDelay = parseInt(e.target.value, 10);
+    $id("delay-val").textContent = state.autoDelay + " ms";
+  });
+
+  $id("temp").addEventListener("input", function (e) {
+    state.temperature = parseInt(e.target.value, 10) / 100;
+    $id("temp-val").textContent = state.temperature.toFixed(2);
+  });
+
+  $id("btn-new").addEventListener("click", function () { newGame(false); });
+  $id("btn-flip").addEventListener("click", function () { newGame(true); });
+
+  $id("btn-undo").addEventListener("click", function () {
+    if (state.busy || state.history.length < 2) { return; }
+    state.game.undo(); state.game.undo();      // 一次退兩步：人與 AI 各一步
+    state.history.splice(state.history.length - 2, 2);
+    state.current = null;
+    state.viewPly = null;
+    renderPosition();
+    analyseCurrent().catch(function (e) { showBanner(e.message); });
+  });
+
+  $id("btn-auto").addEventListener("click", function () {
+    if (state.autoRunning) {
+      state.autoRunning = false;
+      $id("btn-auto").textContent = "▶ 播放";
+      return;
+    }
+    state.autoRunning = true;
+    $id("btn-auto").textContent = "⏸ 暫停";
+    autoLoop().catch(function (e) { showBanner(e.message); });
+  });
+  $id("btn-step").addEventListener("click", function () {
+    if (state.autoRunning) { return; }
+    aiStep(0).then(function () { return analyseCurrent(); }).catch(function (e) { showBanner(e.message); });
+  });
+  $id("btn-auto-reset").addEventListener("click", function () {
+    state.autoRunning = false;
+    $id("btn-auto").textContent = "▶ 播放";
+    newGame(false);
+  });
+
+  $id("btn-load-fen").addEventListener("click", function () {
+    var fen = $id("fen-input").value.trim();
+    if (!fen) { return; }
+    var test = new Chess();
+    if (!test.load(fen)) { showBanner("chess.js 認為這個 FEN 不合法：" + fen); return; }
+    state.game = test;
+    state.history = [];
+    state.viewPly = null;
+    state.current = null;
+    renderPosition();
+    analyseCurrent().catch(function (e) { showBanner(e.message); });
+  });
+  $id("btn-start-fen").addEventListener("click", function () {
+    $id("fen-input").value = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  });
+
+  $id("btn-apply-search").addEventListener("click", async function () {
+    try {
+      await api("/api/config", {
+        mcts: $id("use-mcts").checked,
+        simulations: parseInt($id("sims").value, 10) || 400
+      });
+      await refreshHealth();
+      state.current = null;
+      if (!isGameOver() && state.mode !== "analyse") { await analyseCurrent(); }
+      else if (state.mode === "analyse") { await analyseCurrent(); }
+    } catch (err) { showBanner(err.message); }
+  });
+
+  $id("btn-latest").addEventListener("click", backToLatest);
+  $id("btn-pgn").addEventListener("click", exportPgn);
+  $id("btn-copy-fen").addEventListener("click", function () {
+    copyText($id("fen-out").value, "已複製");
+  });
+  $id("btn-copy-pgn").addEventListener("click", function () {
+    copyText($id("pgn-out").value, "已複製 PGN");
+  });
+  $id("btn-close-pgn").addEventListener("click", function () {
+    $id("pgn-card").style.display = "none";
+  });
+  $id("btn-download-pgn").addEventListener("click", function () {
+    var blob = new Blob([$id("pgn-out").value], { type: "application/x-chess-pgn" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "chess-ai-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "") + ".pgn";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  window.addEventListener("resize", function () {
+    state.board.resize();
+    // 棋盤大小變了，箭頭座標要重算
+    if (state.viewPly !== null) { viewPly(state.viewPly); }
+    else if (state.current) { drawArrows(state.current.moves); }
+    $id("eval-bar").style.height = $id("board").offsetHeight + "px";
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 啟動
+// ---------------------------------------------------------------------------
+
+function boot() {
+  if (!window.jQuery || !window.Chessboard || !window.Chess) {
+    showBanner(
+      "CDN 資源沒載到（jQuery / chessboard.js / chess.js）。" +
+      "這個頁面需要能連上外網才能顯示棋盤，請檢查網路或防火牆設定。"
+    );
+    return;
+  }
+
+  state.game = new Chess();
+  state.board = Chessboard("board", {
+    position: "start",
+    draggable: true,
+    pieceTheme: PIECE_THEME,
+    onDragStart: onDragStart,
+    onDrop: onDrop,
+    onSnapEnd: function () { state.board.position(state.game.fen(), false); }
+  });
+
+  bindUi();
+
+  // 網址可以直接指定模式，例如 /?mode=auto&autostart=1
+  // 展示的時候很方便：開一個分頁就自己開始自我對弈，不用點任何按鈕。
+  var params = new URLSearchParams(location.search);
+  var wanted = params.get("mode");
+  setMode(["play", "auto", "analyse"].indexOf(wanted) >= 0 ? wanted : "play");
+
+  renderPosition();
+  $id("eval-bar").style.height = $id("board").offsetHeight + "px";
+
+  refreshHealth().then(function () {
+    return analyseCurrent();
+  }).then(function () {
+    if (state.mode === "auto" && params.get("autostart") === "1") {
+      $id("btn-auto").click();
+    } else if (state.mode === "play") {
+      setStatus("輪到你了，拖曳棋子走棋。");
+    }
+  }).catch(function (e) { showBanner(e.message); });
+}
+
+window.addEventListener("load", boot);
+</script>
+</body>
+</html>

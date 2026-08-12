@@ -1,0 +1,30 @@
+[
+  {
+    "name": "MyNet",
+    "command": "C:/code/chess_ai/engine.bat",
+    "workingDirectory": "C:/code/chess_ai",
+    "protocol": "uci",
+    "stderrFile": "C:/code/chess_ai/logs/engine_err.log",
+    "whitepov": false,
+    "ponder": false
+  },
+  {
+    "name": "Stockfish",
+    "command": "C:/code/chess_ai/bin/stockfish.exe",
+    "workingDirectory": "C:/code/chess_ai/bin",
+    "protocol": "uci",
+    "whitepov": false,
+    "ponder": false
+  },
+  {
+    "name": "Stockfish-SL0",
+    "command": "C:/code/chess_ai/bin/stockfish.exe",
+    "workingDirectory": "C:/code/chess_ai/bin",
+    "protocol": "uci",
+    "initStrings": [
+      "setoption name Skill Level value 0"
+    ],
+    "whitepov": false,
+    "ponder": false
+  }
+]
