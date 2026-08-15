@@ -313,3 +313,35 @@ def test_candidate_checkpoint_records_matching_architecture(tmp_path) -> None:
     loaded, ck = ChessNet.from_checkpoint(path, device="cpu")
     assert loaded.count_parameters() == model.count_parameters()
     assert ck["config"]["model"]["channels"] == 16
+
+
+def test_smoke_test_isolates_every_output() -> None:
+    """煙霧測試的三個輸出都必須跟正式的分開。
+
+    踩過的坑：`--smoke-test` 只換了 replay buffer 目錄，候選模型與統計 csv
+    照樣寫進正式路徑。跑一次煙霧測試就把正式的 selfplay_candidate.pt 換成
+    只練了 50 步的模型（下一代會拿它當持續訓練的起點），
+    並在 selfplay_log.csv 多寫一行 4 局的假資料。兩者都不會報錯。
+    """
+    import argparse
+
+    from src.selfplay import (
+        CANDIDATE_FILE_NAME,
+        LOG_FILE_NAME,
+        SELFPLAY_DIR,
+        apply_smoke_test_overrides,
+    )
+
+    args = argparse.Namespace(
+        games=500, train_steps=1500, simulations=400, batch_size=256,
+        buffer_dir=SELFPLAY_DIR, candidate_name=CANDIDATE_FILE_NAME,
+        log_name=LOG_FILE_NAME, keep_best=False, from_best=False,
+    )
+    apply_smoke_test_overrides(args)
+
+    assert args.buffer_dir != SELFPLAY_DIR
+    assert args.candidate_name != CANDIDATE_FILE_NAME
+    assert args.log_name != LOG_FILE_NAME
+    # 也不能碰 best.pt，而且不要接續正式的候選模型
+    assert args.keep_best is True
+    assert args.from_best is True
