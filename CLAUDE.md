@@ -5,7 +5,7 @@
 
 ---
 
-## 0. 目前進度（2026-08-13）
+## 0. 目前進度（2026-08-16）
 
 ### 已完成
 
@@ -13,30 +13,65 @@
 |---|---|---|
 | **Phase 1** | M0–M10 監督式學習全流程 | ✅ 全部完成 |
 | **Phase 2** | P1–P20（PGN、UCI、Elo 評估、網頁、MCTS、自我對弈） | ✅ 全部完成 |
-| **P21** | 連續 5 代自我對弈 | 🔄 **執行中** |
+| **P21** | 連續 5 代自我對弈 | ✅ 跑完了，但**沒有任何一代通過把關** |
 
-**197 條測試全過**（`python -m pytest tests/ -q`），全部在 CPU 上跑，不需要 GPU 或 checkpoint。
+**198 條測試全過**（`python -m pytest tests/ -q`），全部在 CPU 上跑，不需要 GPU 或 checkpoint。
 
-P21 已經因為 bug 重啟過兩次（見 §5 的 8 與 11），前兩代產生的資料保留在 buffer 裡，
-`data/selfplay/` 目前有 `iter_0001.npy` 與 `iter_0002.npy`（各約 3.5 MB）。
+### P21 的結果
 
-### 目前正在跑什麼
+| 代 | 盤面 | 平均步數 | 和局 | value_loss | Elo（vs best） | SPRT |
+|---|---|---|---|---|---|---|
+| 1 | 17,760 | 88.8 | 33 % | 0.255 | 0.0 | `?` |
+| 2 | — | — | — | — | — | 中斷，資料留著但從未被訓練 |
+| 3 | 17,714 | 88.6 | 31.5 % | 0.377 | 0.0 ± 55.4（LOS 50 %） | `?` |
+| 4 | 17,039 | 85.2 | 29.5 % | 0.356 | +20.3 ± 54.0（LOS 77 %） | `?` |
+| 5 | 18,019 | 90.1 | 32.5 % | 0.322 | **−67.4** ± 57.2（LOS 1 %） | `?` |
 
-`src/selfplay.py` 的 5 代自我對弈，以獨立行程啟動（不掛在任何 session 底下）：
+`models/best.pt` 全程沒有被換掉（還是 8/12 的監督式模型），把關規則有正常執行。
+資料在 `data/selfplay/iter_0001..0005.npy`，統計在 `logs/selfplay_log.csv`，
+曲線 `logs/selfplay_curves.png`。
+
+**兩個結論要記住：**
+
+1. **這個 SPRT 設定沒有解析度，三個 `?` 幾乎不帶資訊。**
+   `--gate-rounds 60` = 最多 120 局，而量到的信賴區間是 ± 55 Elo。
+   要在 `elo0=0 / elo1=20` 之間分辨勝負需要上千局，llr 只走到 −0.257（邊界 ±2.94）。
+   `?` 不是「沒有進步」的證據，是「這把尺量不出來」。
+2. **第 5 代是真的變差了**（LOS 1.0 %、llr −1.91 往 H0 走）。
+   第 3 代從 `best.pt` 重新開始，第 4、5 代才接續候選模型 ——
+   也就是「持續訓練」一啟動，兩代之後掉了 67 Elo。
+   每代只有 200 局新資料卻練 1500 步 @ lr 1e-4，像是把監督式學到的東西洗掉了。
+
+另外 **認輸率四代都是 0.0 %**：−0.9 連 10 步的門檻一次都沒觸發，
+認輸機制等於沒作用，每代白算了不少必敗殘局。
+
+### 怎麼啟動長時間的跑（重要）
+
+**用 `scripts/run_selfplay_detached.ps1`，不要用 `Start-Process`。**
 
 ```powershell
-# 監看（tqdm 走 stderr）
-Get-Content logs\selfplay_run.log.err -Tail 2
-dir data\selfplay          # 每 25 局更新一次，超過 20 分鐘沒動才是停了
+# 接續跑 3 代（代數自己從 buffer 的檔案數接下去），順便擋掉睡眠
+powershell -ExecutionPolicy Bypass -File scripts\run_selfplay_detached.ps1 -Iterations 3 -BlockSleep
 
-# 跑完之後
-type logs\selfplay_log.csv
+# 監看
+Get-ScheduledTaskInfo -TaskName chessai_selfplay
+Get-Content logs\selfplay_<時間戳>.log -Tail 20        # 健康指標 / SPRT
+dir data\selfplay          # 每 25 局更新一次，超過 20 分鐘沒動才是真的停了
+
+# 停止 / 收尾
+Stop-ScheduledTask -TaskName chessai_selfplay
 python scripts/plot_selfplay.py
-powercfg /change standby-timeout-ac 10   # 把睡眠設定改回來（跑之前擋掉了）
+powercfg /change standby-timeout-ac 10   # 把睡眠設定改回來
 ```
 
-每代約 80 分鐘 + SPRT 把關，5 代約 10–11 小時。
-**中斷不會全部白費**：每 25 局落地一次（`SAVE_EVERY_GAMES`）。
+理由：`Start-Process` 啟動的行程仍在「啟動它的那個 session 的行程樹」底下，
+終端機關閉或 session 結束都可能連坐。排程器啟動的任務父行程是 Task Scheduler 服務，
+不受影響（見 §5 的 13）。每代約 75 分鐘（含 SPRT），3 代約 4 小時。
+
+**中斷的代價很小**：每 25 局落地（`SAVE_EVERY_GAMES`）、每代一行 csv、
+候選模型含 Adam 動量存在磁碟上、代數由 buffer 檔案數推導 ——
+續跑就是重下同一道指令。唯一的缺口是中斷在一代中途時，
+那個只寫了一半的 shard 會被算成完整的一代（第 2 代就是這樣）。
 
 ### 模型現況
 
@@ -59,9 +94,17 @@ value 品質          Spearman 0.7642 / 正負號一致 76.2%（對 Stockfish de
 
 ### 下一步
 
-1. 等 P21 跑完，看 `logs/selfplay_curves.png` 的累積 Elo 有沒有往上
-2. 若要量絕對棋力：`--mode match --uci-elo 1320 1400 1500`（已實作，但 30 局樣本不足，需 150+ 局）
-3. Phase 1.5 備案（用 Stockfish 評分重訓 value）目前**不需要** —— Spearman 0.7642 已超過 0.75 的驗收目標
+優先序是**先修把關的解析度，再調訓練配方** —— 尺不準的時候調參數只是在猜。
+
+1. **放寬 SPRT 的對立假設**（`elo0=0 / elo1=50`），120 局就有機會出結論。
+   代價是只抓得到「明顯變強」。改一行、零額外成本。
+2. **查第 5 代到底壞在哪**：`--mode puzzles --compare-with`（McNemar 配對檢定，已實作），
+   看是戰術能力退化還是別的。不用重跑自我對弈，半小時有答案。
+3. **調訓練配方**：每代 500 局、訓練步數降到 500–800，減少在少量資料上過擬合。
+   代價是每代拉長到 3 小時以上。
+4. 讓認輸機制真的會觸發（目前四代都是 0 %），省下必敗殘局的算力。
+5. 若要量絕對棋力：`--mode match --uci-elo 1320 1400 1500`（已實作，需 150+ 局才有意義）
+6. Phase 1.5 備案（用 Stockfish 評分重訓 value）目前**不需要** —— Spearman 0.7642 已超過 0.75 的驗收目標
 
 ---
 
@@ -123,8 +166,9 @@ chess_ai/
 │   ├── move_info.py  pgn_writer.py  selfplay.py
 │   ├── search/            # greedy.py（policy + 將死檢查 + 送子檢查）、mcts.py
 │   └── web/               # server.py（FastAPI）+ static/index.html（全部前端）
-├── scripts/               # download_data / make_openings / make_demo_games / plot_* / check_opening_value
-└── tests/                 # 8 個測試檔，196 條
+├── scripts/               # download_data / make_openings / make_demo_games / plot_* /
+│                          # check_opening_value / run_selfplay_detached.ps1（長時間跑用這支）
+└── tests/                 # 8 個測試檔，198 條
 ```
 
 每支 `src/*.py` 都能 `python -m src.xxx --help` 單獨執行。
@@ -224,6 +268,24 @@ replay buffer 保留最近 20 代、抽樣偏向新資料。認輸門檻 −0.9 
 12. **`.venv\Scripts\python.exe` 是轉發用的 shim** → 用 `Start-Process` 啟動時，
     回傳的 PID 是外殼（1 執行緒、CPU 0），真正工作的是它的**子行程**。
     看 CPU 判斷死活會誤判；直接看 `data/selfplay` 的檔案時間最可靠。
+
+13. **可見的主控台視窗會被順手關掉** → 工作排程器用 Interactive 身分直接跑 `cmd.exe`
+    會開一個視窗杵在桌面上。使用者關掉它 = `CTRL_CLOSE_EVENT`，整個自我對弈死掉，
+    結束碼 `0xC000013A`（`STATUS_CONTROL_C_EXIT`）。實測掉了兩次。
+    `run_selfplay_detached.ps1` 因此多包一層 VBS：`WScript.Shell.Run(cmd, 0, True)`，
+    `0` = 隱藏視窗。**看到 `0xC000013A` 就是被外力砍的，不是程式壞了。**
+
+14. **`.ps1` 沒有 BOM 會被 cp950 解讀** → Windows PowerShell 5.1 讀不含 BOM 的 UTF-8
+    檔案時當成 ANSI，中文註解被拆碎後吃掉引號，直接變成語法錯誤
+    （`The string is missing the terminator`）。**PowerShell 指令稿一律存成含 BOM 的 UTF-8。**
+    這跟 §5 的 9 是同一個 cp950 家族的問題。
+
+15. **煙霧測試污染正式輸出** → `--smoke-test` 原本只換 replay buffer 目錄，
+    候選模型與統計 csv 照樣寫進正式路徑。跑一次就把 `selfplay_candidate.pt`
+    換成只練了 50 步的模型（下一代會拿它當持續訓練的起點），
+    並在 `selfplay_log.csv` 多寫一行 4 局的假資料。兩者都不報錯。
+    現在三個輸出全部隔離，抽成 `apply_smoke_test_overrides()` 並有測試守著。
+    **測試模式要在路徑層面隔離，不能靠「記得別亂跑」。**
 
 ---
 
