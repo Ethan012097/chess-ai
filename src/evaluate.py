@@ -375,10 +375,151 @@ def evaluate_baseline(ai: Searcher, cfg: Config, num_games: int | None = None) -
 # --- mode: match ------------------------------------------------------------
 
 
+def stockfish_opponents(
+    skill_levels: list[int] | None, uci_elos: list[int] | None
+) -> list[tuple[str, dict, int | None]]:
+    """組出要對打的 Stockfish 設定清單。
+
+    **兩種限制強度的方式，差別很大：**
+
+    - `Skill Level`（0–20）：靠**在多個候選著法之間隨機挑**來變弱。
+      它不是校準過的 Elo 刻度，Stockfish 官方也沒宣稱它是。
+      下出來的棋風是「大部分好棋、偶爾莫名其妙送一子」，
+      勝率換算成 Elo 並不線性。
+    - `UCI_LimitStrength` + `UCI_Elo`：**官方校準過的刻度**（Stockfish 18 是
+      1320–3190）。要量「我方大概幾 Elo」就該用這個。
+
+    Args:
+        skill_levels: Skill Level 清單，None 表示不用這種。
+        uci_elos: UCI_Elo 清單，None 表示不用這種。
+
+    Returns:
+        [(標籤, UCI option dict, 已知 Elo 或 None)]。
+        第三個元素是「這個對手值多少 Elo」—— 只有 UCI_Elo 那種才知道，
+        Skill Level 那種填 None（因為它沒有校準過的對應值）。
+    """
+    opponents: list[tuple[str, dict, int | None]] = []
+    for skill in skill_levels or []:
+        # UCI_LimitStrength 要明確關掉，否則若引擎預設開著會蓋掉 Skill Level
+        opponents.append(
+            (f"Skill Level {skill}", {"UCI_LimitStrength": False, "Skill Level": skill}, None)
+        )
+    for elo in uci_elos or []:
+        # 先開 LimitStrength 再設 Elo（dict 保持插入順序）
+        opponents.append(
+            (f"UCI_Elo {elo}", {"UCI_LimitStrength": True, "UCI_Elo": elo}, elo)
+        )
+    return opponents
+
+
+def check_uci_elo_range(engine: chess.engine.SimpleEngine, wanted: list[int]) -> None:
+    """確認要求的 UCI_Elo 落在這顆引擎支援的範圍內。
+
+    超出範圍時 Stockfish 會默默夾住，量出來的數字就變成假的 —— 必須當場擋下來。
+    """
+    option = engine.options.get("UCI_Elo")
+    if option is None:
+        raise SystemExit(
+            "這個引擎沒有 UCI_Elo 選項，無法用校準刻度評估。\n"
+            "請改用 --skill-levels，或換一顆較新的 Stockfish。"
+        )
+    low, high = option.min, option.max
+    bad = [e for e in wanted if e < low or e > high]
+    if bad:
+        raise SystemExit(
+            f"要求的 UCI_Elo {bad} 超出這顆引擎的範圍（{low}–{high}）。\n"
+            f"Stockfish 會默默把它夾住，量出來的結果會是錯的。\n"
+            f"請改用 {low}–{high} 之間的值。"
+        )
+    print(f"引擎支援的 UCI_Elo 範圍：{low}–{high}")
+
+
+# Stockfish 偶爾會有一步卡住不回 bestmove。等這麼久還沒回就當它掛了。
+# 設得比 python-chess 預設的 10 秒寬鬆，避免只是機器忙就誤判。
+ENGINE_TIMEOUT_S = 30.0
+# 同一步最多重開幾次引擎
+MAX_ENGINE_RESTARTS = 3
+
+
+class StockfishMover:
+    """包住一個 Stockfish 行程，卡住就自動重開。
+
+    這裡開 class 的理由：`run_match` 要的是一個「給盤面回著法」的函式，
+    但那個函式背後需要一個**可以被替換掉**的引擎行程。用 class 存狀態最直接。
+
+    為什麼需要它：實測跑 450 局的評估時，Stockfish 有一步卡了四分多鐘不回應，
+    python-chess 丟出 TimeoutError，**整批測量就這樣沒了**。
+    一次 hiccup 不該讓幾十分鐘的結果歸零。
+    """
+
+    def __init__(self, engine_path: Path, options: dict, movetime_ms: int) -> None:
+        self.engine_path = engine_path
+        self.options = options
+        self.limit = chess.engine.Limit(time=movetime_ms / 1000.0)
+        self.restarts = 0
+        self.engine = self._open()
+
+    def _open(self) -> chess.engine.SimpleEngine:
+        engine = chess.engine.SimpleEngine.popen_uci(
+            str(self.engine_path), timeout=ENGINE_TIMEOUT_S
+        )
+        engine.configure(self.options)
+        return engine
+
+    def play(self, board: chess.Board) -> chess.Move:
+        """讓 Stockfish 走一步；引擎沒回應就重開再試。
+
+        Raises:
+            RuntimeError: 重開 MAX_ENGINE_RESTARTS 次都失敗。
+        """
+        for attempt in range(MAX_ENGINE_RESTARTS + 1):
+            try:
+                move = self.engine.play(board, self.limit).move
+                if move is not None:
+                    return move
+                raise chess.engine.EngineError("引擎回傳了空著法")
+            except (TimeoutError, chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
+                if attempt >= MAX_ENGINE_RESTARTS:
+                    raise RuntimeError(
+                        f"Stockfish 連續 {MAX_ENGINE_RESTARTS} 次無法回應（{type(exc).__name__}）。\n"
+                        f"盤面：{board.fen()}\n"
+                        f"下一步：確認 {self.engine_path} 能正常執行，"
+                        f"或把 config.yaml 的 eval.engine_movetime_ms 調大。"
+                    ) from exc
+                self.restarts += 1
+                print(
+                    f"\n  [警告] Stockfish 沒有回應（{type(exc).__name__}），重開引擎"
+                    f"（第 {self.restarts} 次）。這一步會重走。"
+                )
+                self.close()
+                self.engine = self._open()
+        raise AssertionError("不會走到這裡")
+
+    def close(self) -> None:
+        """關掉引擎行程。已經死掉的話就無視。"""
+        try:
+            self.engine.quit()
+        except Exception:      # noqa: BLE001 — 收屍就是要吃掉所有例外
+            pass
+
+
 def evaluate_match(
-    ai: Searcher, cfg: Config, skill_levels: list[int], num_games: int | None = None
+    ai: Searcher,
+    cfg: Config,
+    opponents: list[tuple[str, dict, int | None]],
+    num_games: int | None = None,
 ) -> list[dict]:
-    """對 Stockfish 打 N 局，每個 Skill Level 各打一組。"""
+    """對 Stockfish 打 N 局，每種強度設定各打一組。
+
+    Args:
+        ai: 我方的 searcher。
+        cfg: 設定。
+        opponents: `stockfish_opponents()` 的輸出。
+        num_games: 每組打幾局，None 表示讀 config。
+
+    Returns:
+        每組一份報告 dict，多了 `opponent_elo` 欄位（不知道就是 None）。
+    """
     games = num_games or cfg.eval.match_games
     engine_path = cfg.resolve_path(cfg.eval.stockfish_path)
 
@@ -392,31 +533,84 @@ def evaluate_match(
             f"（不想裝 Stockfish 的話，可以先跑 --mode baseline）"
         )
 
+    wanted_elos = [elo for _, _, elo in opponents if elo is not None]
+    if wanted_elos:
+        with chess.engine.SimpleEngine.popen_uci(str(engine_path)) as probe:
+            check_uci_elo_range(probe, wanted_elos)
+
     reports: list[dict] = []
-    for skill in skill_levels:
-        print(f"\n--- Stockfish Skill Level {skill} ---")
-        with chess.engine.SimpleEngine.popen_uci(str(engine_path)) as engine:
-            engine.configure({"Skill Level": skill})
-            limit = chess.engine.Limit(time=cfg.eval.engine_movetime_ms / 1000.0)
-
-            def opponent_move(board: chess.Board) -> chess.Move:
-                """讓 Stockfish 走一步。"""
-                return engine.play(board, limit).move
-
+    for index, (label, options, opponent_elo) in enumerate(opponents):
+        print(f"\n--- Stockfish {label} ---")
+        mover = StockfishMover(engine_path, options, cfg.eval.engine_movetime_ms)
+        try:
             result = run_match(
                 ai,
-                opponent_move,
+                mover.play,
                 games,
                 cfg.eval.random_opening_plies,
-                cfg.seed + skill,
-                f"對 Stockfish SL{skill}",
+                cfg.seed + index,
+                f"對 Stockfish {label}",
             )
-        reports.append(print_match_report(f"對 Stockfish Skill Level {skill}", result))
+        finally:
+            mover.close()
+        if mover.restarts:
+            print(f"  （過程中重開引擎 {mover.restarts} 次，見上方警告）")
+        report = print_match_report(f"對 Stockfish {label}", result)
+        report["opponent_elo"] = opponent_elo
+        reports.append(report)
 
-        if skill == 0 and result.wins > 0:
+        if options.get("Skill Level") == 0 and result.wins > 0:
             print("\n  ✓ 對 Skill Level 0 有勝場（M9 達成）")
 
+    if wanted_elos:
+        print_absolute_elo(reports)
     return reports
+
+
+def print_absolute_elo(reports: list[dict]) -> None:
+    """用 UCI_Elo 對手當標尺，推估我方的絕對 Elo。
+
+    每個對手給一個獨立估計：`我方 Elo = 對手 Elo + Elo差(得分率)`。
+    信賴區間直接沿用該場的區間平移過去。
+
+    **不做加權平均。** 幾個估計值如果彼此差很多，那代表模型的棋力
+    在不同對手強度下表現不一致（很常見），硬平均只會把這個訊號抹掉。
+    並排列出來、讓人自己看哪些一致，比一個假的單一數字誠實。
+    """
+    anchored = [r for r in reports if r.get("opponent_elo") is not None]
+    if not anchored:
+        return
+
+    print(f"\n{'=' * 60}")
+    print("絕對 Elo 推估（以 Stockfish 的 UCI_Elo 校準刻度為標尺）")
+    print(f"{'=' * 60}")
+    print(f"  {'對手 Elo':>9}{'得分率':>9}{'我方 Elo':>11}{'95 % 區間':>20}")
+
+    estimates: list[float] = []
+    for r in anchored:
+        anchor = r["opponent_elo"]
+        point = anchor + r["elo_diff"]
+        low = anchor + r["elo_ci_low"]
+        high = anchor + r["elo_ci_high"]
+        estimates.append(point)
+        print(
+            f"  {anchor:>9}{r['score'] * 100:>8.1f}%{point:>11.0f}"
+            f"{f'[{low:.0f}, {high:.0f}]':>20}"
+        )
+
+    spread = max(estimates) - min(estimates)
+    print(f"\n  幾個估計之間相差 {spread:.0f} Elo。")
+    if spread > 150:
+        print(
+            "  差距偏大，代表棋力隨對手強度變化明顯（例如打得贏弱手但被強手輾壓）。\n"
+            "  這種情況下單一數字沒有意義，要看你關心的是哪個區間。"
+        )
+    else:
+        print(f"  彼此相當一致，可以說「大約 {sum(estimates) / len(estimates):.0f} Elo」。")
+    print(
+        "\n  注意：這是 Stockfish 自己的校準刻度（大致對齊 CCRL/FIDE），\n"
+        "  官方也說只是近似。Lichess 的分數通常比這個高 200–400。"
+    )
 
 
 # --- mode: value-quality ----------------------------------------------------
@@ -733,6 +927,204 @@ def solve_puzzle(searcher: Searcher, row: dict) -> bool | None:
         return searcher.select_move(board) == expected
     except (ValueError, KeyError, AssertionError):
         return None
+
+
+def solve_puzzle_detailed(searcher: Searcher, row: dict) -> dict | None:
+    """解一題謎題，回傳完整過程（配對比較與失敗分析用）。
+
+    跟 `solve_puzzle` 的差別只在回傳內容：這支還會附上盤面、正解、實際選擇、
+    以及（MCTS 才有的）訪問次數分佈。要查「為什麼答錯」就需要這些。
+
+    Returns:
+        {"correct", "fen", "expected", "chosen", "visits"}；資料有問題時回 None。
+    """
+    try:
+        board = chess.Board(row["FEN"])
+        moves = row["Moves"].split()
+        if len(moves) < 2:
+            return None
+        board.push_uci(moves[0])
+        expected = chess.Move.from_uci(moves[1])
+        if expected not in board.legal_moves:
+            return None
+        chosen = searcher.select_move(board)
+        # MCTS 才有訪問次數；greedy 沒有這個方法，用 getattr 判斷比 isinstance 好，
+        # 這樣以後多一種 searcher 也不用改這裡
+        visit_fn = getattr(searcher, "visit_counts", None)
+        visits = visit_fn(board) if visit_fn is not None else None
+        return {
+            "correct": chosen == expected,
+            "fen": board.fen(),
+            "expected": board.san(expected),
+            "expected_uci": expected.uci(),
+            "chosen": board.san(chosen),
+            "chosen_uci": chosen.uci(),
+            "visits": visits,
+        }
+    except (ValueError, KeyError, AssertionError):
+        return None
+
+
+def mcnemar_exact_p(b: int, c: int) -> float:
+    """McNemar 檢定的雙尾精確 p 值。
+
+    **為什麼要用配對檢定**：兩個搜尋器跑的是**同一批題目**，
+    大部分題目兩邊都答對或都答錯，那些完全不帶訊息。
+    只有「一個對、一個錯」的**不一致對**才是證據。
+
+    用獨立樣本的標準誤（每桶 100 題 → 約 ±5 %）會嚴重高估雜訊：
+    100 題裡若只有 12 對不一致，判斷依據是那 12 對，不是 100 題。
+
+    Args:
+        b: A 答對而 B 答錯的題數。
+        c: A 答錯而 B 答對的題數。
+
+    Returns:
+        雙尾 p 值。b + c = 0（完全一致）時回傳 1.0。
+
+    用精確二項檢定而不是卡方近似：不一致對常常只有個位數，
+    卡方在小樣本下會給出過度樂觀的 p 值。
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / (2**n)
+    return min(1.0, 2.0 * tail)
+
+
+def evaluate_puzzles_paired(
+    searcher_a: Searcher,
+    searcher_b: Searcher,
+    label_a: str,
+    label_b: str,
+    count: int,
+    local_file: Path | None = None,
+    show_failures: int = 10,
+) -> dict:
+    """在**同一批題目**上跑兩個搜尋器，用 McNemar 檢定比較。
+
+    Args:
+        searcher_a / searcher_b: 兩個要比較的搜尋器。
+        label_a / label_b: 顯示用的名稱。
+        count: 每桶題數。
+        local_file: 謎題 csv。
+        show_failures: 每桶列出幾題「A 對 B 錯」的細節（0 = 不列）。
+
+    Returns:
+        每桶的 {a_correct, b_correct, b_count, c_count, p_value, regressions}。
+    """
+    collected = collect_puzzles(count, local_file)
+    results: dict[str, dict] = {}
+
+    print(f"\n配對比較：{label_a}  vs  {label_b}（同一批題目）\n")
+    header = f"  {'Rating':>10} {label_a[:8]:>9} {label_b[:8]:>9}   {'b':>4} {'c':>4} {'p 值':>8}  判定"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    totals = {"a": 0, "b": 0, "n": 0, "b_count": 0, "c_count": 0}
+    for name in all_puzzle_buckets():
+        rows = collected[name]
+        if not rows:
+            continue
+
+        a_correct = b_correct = attempted = 0
+        only_a = only_b = 0
+        regressions: list[dict] = []
+
+        for row in tqdm(rows, desc=f"Rating {name:>10}", unit="題", leave=False):
+            ra = solve_puzzle_detailed(searcher_a, row)
+            rb = solve_puzzle_detailed(searcher_b, row)
+            if ra is None or rb is None:
+                continue
+            attempted += 1
+            a_correct += int(ra["correct"])
+            b_correct += int(rb["correct"])
+            if ra["correct"] and not rb["correct"]:
+                only_a += 1
+                if len(regressions) < show_failures:
+                    regressions.append(
+                        {
+                            "fen": rb["fen"],
+                            "expected": rb["expected"],
+                            "chosen": rb["chosen"],
+                            "chosen_uci": rb["chosen_uci"],
+                            "visits": rb["visits"],
+                        }
+                    )
+            elif rb["correct"] and not ra["correct"]:
+                only_b += 1
+
+        p = mcnemar_exact_p(only_a, only_b)
+        verdict = "顯著" if p < 0.05 else ("邊緣" if p < 0.10 else "不顯著")
+        direction = ""
+        if p < 0.10:
+            direction = f"（{label_b} 較{'差' if only_a > only_b else '好'}）"
+
+        print(
+            f"  {name:>10} {a_correct / max(attempted, 1) * 100:>8.1f}% "
+            f"{b_correct / max(attempted, 1) * 100:>8.1f}%   "
+            f"{only_a:>4} {only_b:>4} {p:>8.4f}  {verdict}{direction}"
+        )
+
+        results[name] = {
+            "attempted": attempted,
+            "a_correct": a_correct,
+            "b_correct": b_correct,
+            "b_count": only_a,
+            "c_count": only_b,
+            "p_value": p,
+            "regressions": regressions,
+        }
+        totals["a"] += a_correct
+        totals["b"] += b_correct
+        totals["n"] += attempted
+        totals["b_count"] += only_a
+        totals["c_count"] += only_b
+
+    p_all = mcnemar_exact_p(totals["b_count"], totals["c_count"])
+    print(
+        f"  {'總計':>10} {totals['a'] / max(totals['n'], 1) * 100:>8.1f}% "
+        f"{totals['b'] / max(totals['n'], 1) * 100:>8.1f}%   "
+        f"{totals['b_count']:>4} {totals['c_count']:>4} {p_all:>8.4f}"
+    )
+    print(
+        f"\n  b = {label_a} 對而 {label_b} 錯的題數；c = 反過來。\n"
+        f"  只有這些**不一致對**帶訊息；兩邊都對或都錯的題目不影響檢定。"
+    )
+
+    results["_overall"] = {
+        "attempted": totals["n"],
+        "a_correct": totals["a"],
+        "b_correct": totals["b"],
+        "b_count": totals["b_count"],
+        "c_count": totals["c_count"],
+        "p_value": p_all,
+    }
+    print_puzzle_regressions(results, label_a, label_b, show_failures)
+    return results
+
+
+def print_puzzle_regressions(
+    results: dict, label_a: str, label_b: str, limit: int
+) -> None:
+    """列出「A 答對但 B 答錯」的題目細節，用來查退步的原因。"""
+    if limit <= 0:
+        return
+    for name, data in results.items():
+        if name.startswith("_") or not data.get("regressions"):
+            continue
+        print(f"\n{'=' * 74}")
+        print(f"Rating {name}：{label_a} 答對但 {label_b} 答錯的前 {len(data['regressions'])} 題")
+        print(f"{'=' * 74}")
+        for i, r in enumerate(data["regressions"], 1):
+            print(f"\n  [{i}] {r['fen']}")
+            print(f"      正解 {r['expected']}   實際走 {r['chosen']}")
+            if r["visits"]:
+                top = sorted(r["visits"].items(), key=lambda kv: kv[1], reverse=True)[:6]
+                total = sum(r["visits"].values())
+                spread = " ".join(f"{u}:{n}" for u, n in top)
+                print(f"      訪問次數（共 {total}）: {spread}")
 
 
 def evaluate_puzzles(
@@ -1181,7 +1573,40 @@ def main() -> None:
         type=int,
         nargs="+",
         default=None,
-        help="Stockfish Skill Level（預設讀 config 的 [0, 3, 5]）",
+        help="Stockfish Skill Level（預設讀 config 的 [0, 3, 5]）。不是校準過的 Elo 刻度",
+    )
+    parser.add_argument(
+        "--uci-elo",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "改用 Stockfish 官方校準的 UCI_Elo 當標尺（例如 --uci-elo 1400 1600 1800）。"
+            "指定後會推估我方的絕對 Elo。這比 Skill Level 準，因為 Skill Level 是靠隨機化變弱"
+        ),
+    )
+    parser.add_argument(
+        "--compare-with",
+        type=str,
+        default=None,
+        choices=["greedy", "mcts"],
+        help=(
+            "puzzles 模式：在**同一批題目**上跑兩種搜尋器並做 McNemar 配對檢定。"
+            "例如 --compare-with mcts 會拿 greedy 當基準跟 MCTS 比"
+        ),
+    )
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        default="greedy",
+        choices=["greedy", "mcts"],
+        help="--compare-with 的比較基準（預設 greedy）",
+    )
+    parser.add_argument(
+        "--show-failures",
+        type=int,
+        default=10,
+        help="配對比較時，每桶列出幾題「基準對而對照錯」的細節（0 = 不列）",
     )
     parser.add_argument(
         "--max-batches", type=int, default=None, help="accuracy 模式只跑前 N 個 batch"
@@ -1319,19 +1744,48 @@ def main() -> None:
                 model, cfg, device, args.value_positions, args.value_depth
             )
         elif args.mode == "puzzles":
-            puzzle_file = Path(args.puzzle_file) if args.puzzle_file else None
-            if args.mcts:
-                # 接上 MCTS 重跑同一批題目，用來量搜尋到底補了多少（規格 §6.6）
-                from src.search.mcts import MCTSSearcher
+            from src.search.mcts import MCTSSearcher
 
-                simulations = args.simulations or (cfg.mcts or {}).get("simulations", 800)
-                searcher = MCTSSearcher(model, device, cfg, simulations=simulations)
-                print(f"使用 MCTS（simulations={simulations}）")
-            payload["mcts"] = bool(args.mcts)
-            payload["result"] = evaluate_puzzles(searcher, args.puzzle_count, puzzle_file)
+            puzzle_file = Path(args.puzzle_file) if args.puzzle_file else None
+            simulations = args.simulations or (cfg.mcts or {}).get("simulations", 800)
+
+            if args.compare_with:
+                # 配對比較：同一批題目跑兩種搜尋器，用 McNemar 檢定
+                # （獨立樣本的標準誤會嚴重高估雜訊，見 mcnemar_exact_p 的說明）
+                def build(kind: str) -> tuple[Searcher, str]:
+                    if kind == "greedy":
+                        return GreedySearcher(model, device, cfg), "greedy"
+                    return (
+                        MCTSSearcher(model, device, cfg, simulations=simulations),
+                        f"MCTS{simulations}",
+                    )
+
+                searcher_a, label_a = build(args.baseline)
+                searcher_b, label_b = build(args.compare_with)
+                payload["compare"] = {"a": label_a, "b": label_b}
+                payload["result"] = evaluate_puzzles_paired(
+                    searcher_a, searcher_b, label_a, label_b,
+                    args.puzzle_count, puzzle_file, args.show_failures,
+                )
+            else:
+                if args.mcts:
+                    # 接上 MCTS 重跑同一批題目，用來量搜尋到底補了多少（規格 §6.6）
+                    searcher = MCTSSearcher(model, device, cfg, simulations=simulations)
+                    print(f"使用 MCTS（simulations={simulations}）")
+                payload["mcts"] = bool(args.mcts)
+                payload["result"] = evaluate_puzzles(
+                    searcher, args.puzzle_count, puzzle_file
+                )
         else:
-            skills = args.skill_levels or cfg.eval.skill_levels
-            payload["results"] = evaluate_match(searcher, cfg, skills, args.games)
+            if args.uci_elo:
+                # 指定了校準刻度就只用它，不要跟 Skill Level 混在同一次報告裡
+                # —— 兩者不是同一個尺標，並排會讓人以為可以互相換算。
+                opponents = stockfish_opponents(None, args.uci_elo)
+            else:
+                opponents = stockfish_opponents(
+                    args.skill_levels or cfg.eval.skill_levels, None
+                )
+            payload["results"] = evaluate_match(searcher, cfg, opponents, args.games)
 
     path = save_report(payload)
     print(f"\n結果已存到 {path}")

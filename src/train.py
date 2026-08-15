@@ -355,7 +355,13 @@ def train(cfg: Config, args: argparse.Namespace) -> None:
         best_top1 = checkpoint.get("best_top1", 0.0)
         print(f"[續訓] 從 {resume_path} 繼續，epoch={start_epoch}、step={global_step}")
 
-    models_dir = PROJECT_ROOT / "models"
+    # 輸出目錄可以指定。理由：換 preset 重訓時 `epoch_N.pt` 會跟舊 preset 的檔名
+    # 撞在一起（epoch_1.pt 就是 epoch_1.pt），直接把先前訓練好的模型蓋掉；
+    # 而且 `best.pt` 是依 val top-1 自動覆寫的，**完全沒有經過對局把關**。
+    # 分開目錄之後，新舊模型可以先 SPRT 對打，確認比較強才手動換掉 best.pt。
+    models_dir = PROJECT_ROOT / (args.model_dir or "models")
+    models_dir.mkdir(parents=True, exist_ok=True)
+    best_path = models_dir / "best.pt"
     logs_dir = PROJECT_ROOT / "logs"
     csv_path = logs_dir / LOG_FILE_NAME
     val_csv_path = logs_dir / VAL_LOG_FILE_NAME
@@ -493,10 +499,10 @@ def train(cfg: Config, args: argparse.Namespace) -> None:
                 if val_metrics["policy_top1"] > best_top1:
                     best_top1 = val_metrics["policy_top1"]
                     save_checkpoint(
-                        models_dir / "best.pt", model, optimizer, scheduler,
+                        best_path, model, optimizer, scheduler,
                         epoch, global_step, cfg, best_top1,
                     )
-                    tqdm.write(f"  → 新的最佳模型，已存到 models/best.pt")
+                    tqdm.write(f"  → 新的最佳模型，已存到 {best_path}")
 
             if args.smoke_test and global_step >= SMOKE_TEST_STEPS:
                 stop = True
@@ -536,10 +542,10 @@ def train(cfg: Config, args: argparse.Namespace) -> None:
         if val_metrics["policy_top1"] > best_top1:
             best_top1 = val_metrics["policy_top1"]
             save_checkpoint(
-                models_dir / "best.pt", model, optimizer, scheduler,
+                best_path, model, optimizer, scheduler,
                 epoch + 1, global_step, cfg, best_top1,
             )
-            print(f"新的最佳模型（top1={best_top1 * 100:.2f}%），已存到 models/best.pt")
+            print(f"新的最佳模型（top1={best_top1 * 100:.2f}%），已存到 {best_path}")
 
     # --- 收尾 ---
     if args.smoke_test:
@@ -584,6 +590,13 @@ def main() -> None:
         "--smoke-test",
         action="store_true",
         help=f"只跑 {SMOKE_TEST_STEPS} 步，用來確認整條路是通的",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=str,
+        default=None,
+        help="checkpoint 輸出目錄（預設 models/）。換 preset 重訓時務必指定，"
+             "否則會覆蓋掉舊 preset 的 epoch_N.pt，以及未經對局把關的 best.pt",
     )
     parser.add_argument("--resume", type=str, default=None, help="從 checkpoint 續訓")
     parser.add_argument("--epochs", type=int, default=None, help="覆寫 config 的 epochs")

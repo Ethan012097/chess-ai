@@ -290,3 +290,26 @@ def test_dataset_rejects_selfplay_without_soft_targets(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="soft_targets"):
         ChessPositionDataset(tmp_path / "iter_0001.npy", soft_targets=False)
+
+
+def test_candidate_checkpoint_records_matching_architecture(tmp_path) -> None:
+    """存候選模型時，記的架構必須跟權重一致。
+
+    踩過的坑：直接寫 `cfg.to_dict()`，但 cfg 來自 config.yaml 的預設 preset
+    （base, C128），而權重是從 best.pt 繼承的 small(C96)。
+    下一代載入時會照 C128 建模型再去載 C96 的權重 → size mismatch。
+    """
+    import torch
+    from src.model import ChessNet
+
+    model = ChessNet(channels=16, blocks=2)
+    ckpt_config = {"model": {"channels": 16, "blocks": 2,
+                             "value_head_channels": 8, "value_hidden": 256}}
+    path = tmp_path / "candidate.pt"
+    torch.save({"model_state_dict": model.state_dict(),
+                "config": ckpt_config, "epoch": 1}, path)
+
+    # 存什麼就要能載回什麼，不能靠全域設定去猜
+    loaded, ck = ChessNet.from_checkpoint(path, device="cpu")
+    assert loaded.count_parameters() == model.count_parameters()
+    assert ck["config"]["model"]["channels"] == 16

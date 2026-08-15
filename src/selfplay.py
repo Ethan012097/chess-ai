@@ -75,6 +75,11 @@ RESIGN_CONSECUTIVE = 10
 RESIGN_AUDIT_RATIO = 0.1
 # 超過這個步數就判和，避免罕見的無限拉鋸吃掉整個 iteration
 MAX_GAME_PLIES = 400
+# 每下這麼多局就把目前累積的資料落地一次。
+# **不做這件事的代價很實際**：自我對弈一代要好幾小時，中途被中斷
+#（關機、睡眠、session 結束）就什麼都不留。實測連續兩次中斷，
+# 各損失數十局的計算，replay buffer 完全是空的。
+SAVE_EVERY_GAMES = 25
 
 # replay buffer 保留最近幾個 iteration（滑動視窗，避免被早期的爛資料拖住）
 BUFFER_ITERATIONS = 20
@@ -286,6 +291,7 @@ def generate_games(
     num_games: int,
     simulations: int,
     seed: int,
+    on_progress=None,
 ) -> tuple[list[tuple], dict[str, float]]:
     """自我對弈 N 局，回傳所有樣本與統計。
 
@@ -296,6 +302,8 @@ def generate_games(
         num_games: 要下幾局。
         simulations: 每步的模擬次數。
         seed: 亂數種子。
+        on_progress: 每 SAVE_EVERY_GAMES 局呼叫一次 `on_progress(rows)`，
+            用來把中途結果落地。中斷時才不會整代白跑。
 
     Returns:
         (rows, stats)。rows 可直接寫成 SELFPLAY_DTYPE 陣列。
@@ -339,6 +347,9 @@ def generate_games(
             {"盤面": f"{len(rows):,}", "平均步數": f"{np.mean(plies):.0f}",
              "和局": f"{draws / (i + 1) * 100:.0f}%"}
         )
+        # 定期落地。中斷的話至少留下已經算完的部分。
+        if on_progress is not None and (i + 1) % SAVE_EVERY_GAMES == 0:
+            on_progress(rows)
     bar.close()
 
     stats = {
@@ -626,13 +637,19 @@ def run_iteration(
     # 1. 產生對局 —— 一律用 best.pt（已經通過把關的那個），不是正在訓練的那個
     generator, _ = ChessNet.from_checkpoint(best_path, device=device)
     generator.eval()
+    shard = buffer_dir / f"iter_{iteration:04d}.npy"
+
+    def flush(partial: list[tuple]) -> None:
+        """把中途結果寫進 shard（同一個檔，覆寫）。"""
+        save_shard(partial, shard)
+
     rows, stats = generate_games(
-        generator, device, cfg, args.games, args.simulations, cfg.seed + iteration
+        generator, device, cfg, args.games, args.simulations,
+        cfg.seed + iteration, on_progress=flush,
     )
     print_health(stats)
 
     # 2. 寫入 replay buffer
-    shard = buffer_dir / f"iter_{iteration:04d}.npy"
     save_shard(rows, shard)
     removed = prune_buffer(buffer_dir)
     print(f"  已寫入 {shard}（{len(rows):,} 筆）")
@@ -657,13 +674,21 @@ def run_iteration(
         steps=args.train_steps, batch_size=args.batch_size,
         seed=cfg.seed + iteration,
     )
+    # **checkpoint 裡記的架構必須跟權重一致。**
+    # 這裡曾經直接寫 `cfg.to_dict()`，但 cfg 來自 config.yaml 的預設 preset，
+    # 跟「實際載進來的那個模型」可能是不同大小的網路：
+    # best.pt 是 small(C96)、config.yaml 預設 base(C128)，存下去之後
+    # 下一代 `from_checkpoint` 會照 C128 建模型再去載 C96 的權重，
+    # 直接 size mismatch 掛掉（實測第 2 代就爆了）。
+    # 正確做法是沿用「載進來那個 checkpoint 的 config」。
+    saved_config = ckpt.get("config") or cfg.to_dict()
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": iteration,
             "global_step": ckpt.get("global_step", 0) + args.train_steps,
-            "config": cfg.to_dict(),
+            "config": saved_config,
             "source": "selfplay",
         },
         candidate_path,
