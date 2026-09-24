@@ -192,12 +192,20 @@ def get_state() -> EngineState:
 
 
 class AnalyseRequest(BaseModel):
-    """`POST /api/analyse` 的輸入。"""
+    """`POST /api/analyse` 的輸入。
+
+    盤面 = 從 `fen` 開始依序走完 `moves`。只給 FEN 也可以，但 FEN 沒有歷史，
+    偵測不到三次重複；對局中的前端一律送「起始 FEN + 整串著法」。
+    """
 
     fen: str
+    moves: list[str] = Field(default_factory=list)
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
     # 自動播放時給一點隨機性，不然每一局都會下得一模一樣。0 = 完全照最高分走。
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    # True = 就算目前是 MCTS 也只看 policy。給人類回合的提示箭頭用：
+    # 幾毫秒就好，不必為了畫建議跑一整次搜尋、還佔住推論鎖拖慢 AI 的下一步。
+    policy_only: bool = False
 
 
 class MoveRequest(BaseModel):
@@ -255,6 +263,37 @@ def parse_fen(fen: str) -> chess.Board:
         ) from exc
 
 
+def replay_moves(fen: str, moves: list[str]) -> chess.Board:
+    """從 FEN 開始依序走完 `moves`，回傳帶有完整歷史的盤面。
+
+    用 `push()` 重建而不是直接吃最後的 FEN，`move_stack` 才會在，
+    `game_over_info()` 才判斷得出三次重複。
+
+    Args:
+        fen: 起始盤面。
+        moves: UCI 著法串。
+
+    Returns:
+        chess.Board（含歷史）。
+
+    Raises:
+        HTTPException: FEN 或其中某一步不合法（訊息指出是第幾步）。
+    """
+    board = parse_fen(fen)
+    for i, uci in enumerate(moves):
+        try:
+            move = chess.Move.from_uci(uci.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"第 {i + 1} 步著法格式錯誤：{uci}") from exc
+        if move not in board.legal_moves:
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {i + 1} 步 {uci} 在該盤面不合法。請按「新的一局」重新開始。",
+            )
+        board.push(move)
+    return board
+
+
 def game_over_info(board: chess.Board) -> tuple[bool, str | None, str | None]:
     """判斷對局是否結束。
 
@@ -266,8 +305,8 @@ def game_over_info(board: chess.Board) -> tuple[bool, str | None, str | None]:
           result 是 "1-0" / "0-1" / "1/2-1/2"，未結束時為 None。
           reason 是給人看的中文說明。
 
-    注意：從 FEN 重建的盤面沒有歷史，所以偵測不到三次重複。
-    但五十步計數在 FEN 裡，七十五步規則仍然會生效，自動播放不會無限跑下去。
+    注意：只從 FEN 重建的盤面沒有歷史，偵測不到三次重複（用 `replay_moves()` 就可以）。
+    五十步計數在 FEN 裡，所以七十五步規則無論如何都會生效。
     """
     if not board.is_game_over(claim_draw=True):
         return False, None, None
@@ -312,7 +351,11 @@ def value_payload(value: float, turn: chess.Color) -> dict[str, float]:
 
 
 def analyse_position(
-    state: EngineState, board: chess.Board, top_k: int, temperature: float = 0.0
+    state: EngineState,
+    board: chess.Board,
+    top_k: int,
+    temperature: float = 0.0,
+    policy_only: bool = False,
 ) -> dict[str, Any]:
     """分析一個盤面：value、候選著法機率、以及 AI 實際會走的那一步。
 
@@ -325,6 +368,7 @@ def analyse_position(
         board: 要分析的盤面。
         top_k: 回傳前幾名候選著法。
         temperature: 0 = 取最高分；>0 = 依機率抽樣（自動播放製造變化用）。
+        policy_only: True 表示就算目前是 MCTS 也只用 policy（人類回合的提示用）。
 
     Returns:
         可以直接丟給 FastAPI 序列化的 dict，欄位見 §4.2。
@@ -332,6 +376,8 @@ def analyse_position(
     """
     start = time.perf_counter()
     is_over, result, reason = game_over_info(board)
+    use_mcts = state.use_mcts and not policy_only
+    source = "mcts" if use_mcts else "policy"
 
     if is_over:
         # 終局不呼叫網路：分數是確定的，用網路去猜反而會給出矛盾的數字。
@@ -344,16 +390,22 @@ def analyse_position(
             is_game_over=True,
             result=result,
             result_reason=reason,
-            source="mcts" if state.use_mcts else "policy",
+            source=source,
             elapsed_ms=int((time.perf_counter() - start) * 1000),
         )
         return payload
 
-    with state.lock:
-        if state.use_mcts:
+    if use_mcts:
+        with state.lock:
             value, probs, visits, best = _analyse_mcts(state, board, temperature)
-        else:
-            value, probs, visits, best = _analyse_policy(state, board, temperature)
+    elif isinstance(state.searcher, GreedySearcher):
+        with state.lock:
+            value, probs, visits, best = _analyse_policy(state.searcher, board, temperature)
+    else:
+        # MCTS 模式下只要 policy：臨時建一個 GreedySearcher（只是包住同一個模型，
+        # 不會重載權重）。它沒有共用狀態，所以不必搶鎖、不會被 MCTS 搜尋卡住。
+        greedy = GreedySearcher(state.model, state.device, state.cfg)
+        value, probs, visits, best = _analyse_policy(greedy, board, temperature)
 
     ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
     moves = [
@@ -373,16 +425,21 @@ def analyse_position(
         is_game_over=False,
         result=None,
         result_reason=None,
-        source="mcts" if state.use_mcts else "policy",
+        source=source,
         elapsed_ms=int((time.perf_counter() - start) * 1000),
     )
     return payload
 
 
 def _analyse_policy(
-    state: EngineState, board: chess.Board, temperature: float
+    searcher: GreedySearcher, board: chess.Board, temperature: float
 ) -> tuple[float, dict[chess.Move, float], dict[str, int] | None, chess.Move]:
     """greedy 版本的分析。
+
+    Args:
+        searcher: 要用的 GreedySearcher（全域那一個，或 MCTS 模式下臨時建的）。
+        board: 盤面。
+        temperature: 0 = 取最高分；>0 = 依機率抽樣。
 
     Returns:
         (value, {著法: policy 機率}, None, AI 實際會走的著法)
@@ -392,8 +449,6 @@ def _analyse_policy(
     多花的幾毫秒換來「畫出來的箭頭」與「真的會走的棋」保證同源，很划算。
     箭頭最粗的那條有時不等於實際走的那步 —— 那正是送子檢查發揮作用的時候。
     """
-    searcher = state.searcher
-    assert isinstance(searcher, GreedySearcher)
     value, probs = searcher.analyse(board)
 
     original = searcher.temperature
@@ -498,17 +553,19 @@ def health() -> dict[str, Any]:
 def analyse(req: AnalyseRequest) -> dict[str, Any]:
     """分析盤面，回傳評估與候選著法（同步 def，見檔頭說明）。"""
     state = get_state()
-    board = parse_fen(req.fen)
-    return analyse_position(state, board, req.top_k, req.temperature)
+    board = replay_moves(req.fen, req.moves)
+    return analyse_position(state, board, req.top_k, req.temperature, req.policy_only)
 
 
 @app.post("/api/move")
 def move(req: MoveRequest) -> dict[str, Any]:
     """在盤面上走一步，回傳新的 FEN。
 
-    合法性由 python-chess 判斷（前端的 chess.js 只是為了拖曳時能即時回饋）。
-    非法著法回傳 `legal: false` 與**原本的 FEN**，前端據此把棋子彈回去，
-    盤面不會進入錯誤狀態。
+    非法著法回傳 `legal: false` 與**原本的 FEN**。
+
+    網頁前端已經不呼叫這支了：走棋在 chess.js 本地生效，接著的 `/api/analyse`
+    會帶整串著法由 python-chess 重播一次，不合法就回 400 —— 後端仍然是權威，
+    但每一步少兩次往返。保留給外部腳本或手動測試用。
     """
     board = parse_fen(req.fen)
     try:

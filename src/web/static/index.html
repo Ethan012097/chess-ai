@@ -17,255 +17,869 @@
       href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
 
 <style>
+  /* ========================================================================
+     設計變數。暗色是預設；亮色在「系統偏好亮色且沒強制暗色」或「強制亮色」時套用。
+     ======================================================================== */
   :root {
-    --bg:        #14161a;
-    --panel:     #1d2026;
-    --panel-2:   #23262e;
-    --line:      #31353f;
-    --text:      #e6e8ec;
-    --muted:     #949aa6;
-    --accent:    #4a90e2;
-    --good:      #5fbf6a;
-    --bad:       #d9605a;
-    --board-size: 560px;
+    --bg:        #0f1115;
+    --bg-glow:   rgba(91, 141, 239, .16);   /* 背景左上角的光暈 */
+    --panel:     #171a21;
+    --panel-2:   #1f232c;
+    --line:      #2a2f3a;
+    --text:      #e8eaf0;
+    --muted:     #8b93a3;
+    --accent:    #5b8def;
+    --accent-2:  #8b5cf6;                   /* 漸層的第二色 */
+    --accent-soft: rgba(91, 141, 239, .16);
+    --good:      #4cc38a;
+    --bad:       #ef5f5f;
+    --warn:      #f0b429;
+    --banner-bg: #3b1d1f;
+    --banner-fg: #ffd9d6;
+    --shadow:    rgba(0, 0, 0, .45);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 14px rgba(0, 0, 0, .18);
+    --shadow-lg: 0 18px 50px rgba(0, 0, 0, .5);
+    --pattern:   rgba(255, 255, 255, .035); /* 選單背景的棋盤格紋 */
+    --eval-dark: #3a3f4b;
+    --eval-light:#f4f5f7;
+    --radius:    12px;
+    --radius-sm: 8px;
+    --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+    /* 棋盤跟著視窗高度縮放，筆電不用捲動就看得到整個棋盤加上下兩條玩家列 */
+    --board-size: min(600px, max(320px, calc(100vh - 250px)));
+    --bar-h: 42px;       /* 玩家列高度；評估條上下的文字也用同一個高度，兩欄才會對齊 */
+    /* 手機底部抽屜收合時的高度：扣掉標題、棋盤欄（約 600px）之後剩下的空間，
+       狀態列才不會被蓋住；太矮的手機至少留 170px 給分頁列與第一張卡片 */
+    --sheet-h: max(170px, calc(100vh - 610px));
+    color-scheme: dark;
   }
+  /* 亮色主題。同一組變數寫兩次：一次給「跟隨系統」、一次給「強制亮色」 */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #eef1f6; --bg-glow: rgba(58, 116, 224, .13); --panel: #ffffff; --panel-2: #f3f5f9;
+      --line: #e0e4eb; --text: #1b1f27; --muted: #626a79; --accent: #3a74e0; --accent-2: #7c4dff;
+      --accent-soft: rgba(58, 116, 224, .12); --good: #1f9d63; --bad: #d64545; --warn: #c98a0b;
+      --banner-bg: #fdecec; --banner-fg: #8a1f1a; --shadow: rgba(20, 30, 50, .18);
+      --shadow-sm: 0 1px 2px rgba(20, 30, 50, .06), 0 4px 14px rgba(20, 30, 50, .06);
+      --shadow-lg: 0 18px 50px rgba(20, 30, 50, .18);
+      --pattern: rgba(20, 30, 50, .035); --eval-dark: #4b5160; --eval-light: #ffffff;
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f6; --bg-glow: rgba(58, 116, 224, .13); --panel: #ffffff; --panel-2: #f3f5f9;
+    --line: #e0e4eb; --text: #1b1f27; --muted: #626a79; --accent: #3a74e0; --accent-2: #7c4dff;
+    --accent-soft: rgba(58, 116, 224, .12); --good: #1f9d63; --bad: #d64545; --warn: #c98a0b;
+    --banner-bg: #fdecec; --banner-fg: #8a1f1a; --shadow: rgba(20, 30, 50, .18);
+    --shadow-sm: 0 1px 2px rgba(20, 30, 50, .06), 0 4px 14px rgba(20, 30, 50, .06);
+    --shadow-lg: 0 18px 50px rgba(20, 30, 50, .18);
+    --pattern: rgba(20, 30, 50, .035); --eval-dark: #4b5160; --eval-light: #ffffff;
+    color-scheme: light;
+  }
+
   * { box-sizing: border-box; }
   body {
-    margin: 0;
-    background: var(--bg);
+    margin: 0; min-height: 100vh;
     color: var(--text);
-    font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+    background:
+      radial-gradient(900px 500px at 0% 0%, var(--bg-glow), transparent 70%),
+      var(--bg);
+    background-attachment: fixed;
+    font-family: "Segoe UI", "Microsoft JhengHei", "PingFang TC", system-ui, sans-serif;
     font-size: 14px;
+    -webkit-font-smoothing: antialiased;
   }
+  button, select, input, textarea { font-family: inherit; }
+  button { transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s, transform .15s; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Logo：漸層圓角方塊裡放一隻騎士 */
+  .logo {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 30px; height: 30px; border-radius: 9px; font-size: 19px; color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 4px 12px var(--accent-soft);
+  }
+
+  /* --- 標題列：固定在上方，半透明毛玻璃 --- */
   header {
-    padding: 12px 20px;
+    position: sticky; top: 0; z-index: 50;
+    padding: 10px 20px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--line);
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
   }
-  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
-  #health { color: var(--muted); font-size: 12px; font-family: Consolas, monospace; }
-
-  nav { display: flex; gap: 6px; padding: 12px 20px 0; }
-  nav button {
-    background: var(--panel); color: var(--muted);
-    border: 1px solid var(--line); border-bottom: none;
-    padding: 8px 18px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 14px;
+  header h1 { font-size: 16px; margin: 0; font-weight: 700; letter-spacing: .01em; }
+  #health { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  .mode-chip {
+    font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
   }
-  nav button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+  #btn-menu { margin-left: auto; }
 
+  /* ========================================================================
+     開局選單
+     ======================================================================== */
+  .menu-screen {
+    position: fixed; inset: 0; z-index: 100; overflow-y: auto;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 7vh 16px 32px;
+    background:
+      radial-gradient(700px 420px at 15% 0%, var(--bg-glow), transparent 70%),
+      radial-gradient(600px 400px at 100% 100%, color-mix(in srgb, var(--accent-2) 14%, transparent), transparent 70%),
+      var(--bg);
+  }
+  /* 淡淡的棋盤格紋，往下漸漸消失 */
+  .menu-screen::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background-image: conic-gradient(var(--pattern) 25%, transparent 0 50%, var(--pattern) 0 75%, transparent 0);
+    background-size: 72px 72px;
+    -webkit-mask-image: linear-gradient(to bottom, #000, transparent 75%);
+            mask-image: linear-gradient(to bottom, #000, transparent 75%);
+  }
+  .menu-screen[hidden] { display: none; }
+  .menu-card {
+    position: relative; width: 100%; max-width: 660px;
+    display: flex; flex-direction: column; gap: 22px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
+    padding: 30px; box-shadow: var(--shadow-lg);
+    animation: menu-in .35s ease-out;
+  }
+  @keyframes menu-in { from { opacity: 0; transform: translateY(12px) scale(.985); } }
+  .menu-head { display: flex; align-items: center; gap: 16px; }
+  .menu-head .logo { width: 56px; height: 56px; border-radius: 16px; font-size: 34px; }
+  .menu-head h2 { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: .01em; }
+  .menu-head .tagline { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  #menu-model {
+    display: inline-block; margin-top: 8px; padding: 2px 9px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+  }
+  .menu-label { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+  .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .mode-opt {
+    --tone: var(--accent);
+    position: relative;
+    display: grid; grid-template-columns: auto 1fr; column-gap: 14px; row-gap: 3px;
+    align-items: center; text-align: left; padding: 16px;
+    background: var(--panel-2); color: var(--text); font-size: 15px;
+    border: 1.5px solid var(--line); border-radius: 14px; cursor: pointer;
+  }
+  .mode-opt[data-mode="play"]    { --tone: #4f86f7; }
+  .mode-opt[data-mode="blind"]   { --tone: #e5566f; }
+  .mode-opt[data-mode="auto"]    { --tone: #22a67a; }
+  .mode-opt[data-mode="analyse"] { --tone: #e39a12; }
+  .mode-opt:hover { transform: translateY(-2px); box-shadow: var(--shadow-sm); border-color: color-mix(in srgb, var(--tone) 45%, var(--line)); }
+  .mode-opt.selected {
+    border-color: var(--tone);
+    background: color-mix(in srgb, var(--tone) 9%, var(--panel-2));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 20%, transparent);
+  }
+  /* 選中時右上角的勾勾 */
+  .mode-opt.selected::after {
+    content: "✓"; position: absolute; top: 10px; right: 10px;
+    width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--tone); color: #fff; font-size: 12px; font-weight: 700;
+  }
+  .mode-icon {
+    grid-row: span 2; width: 46px; height: 46px; border-radius: 12px;
+    display: grid; place-items: center; font-size: 26px; line-height: 1;
+    color: var(--tone); background: color-mix(in srgb, var(--tone) 14%, transparent);
+  }
+  .mode-opt b { font-size: 15px; }
+  .mode-desc { color: var(--muted); font-size: 12px; line-height: 1.5; padding-right: 18px; }
+  .menu-opts { display: none; flex-direction: column; gap: 14px; }
+  .menu-opts.show { display: flex; }
+  .menu-section {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 16px; border-radius: 14px; background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .menu-section:not(:has(.menu-opts.show)) { display: none; }
+  .menu-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .menu-row > .menu-label { min-width: 64px; }
+  .seg {
+    display: inline-flex; gap: 2px; padding: 3px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .seg button {
+    background: transparent; color: var(--muted); border: none; white-space: nowrap;
+    padding: 7px 14px; border-radius: 7px; cursor: pointer; font-size: 14px;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button.active { background: var(--accent); color: #fff; font-weight: 600; box-shadow: 0 2px 8px var(--accent-soft); }
+  .menu-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .menu-actions .hint { margin-right: auto; }
+  button.big { padding: 12px 30px; font-size: 16px; font-weight: 700; border-radius: 12px; }
+  @media (max-width: 560px) {
+    .menu-screen { padding-top: 16px; }
+    /* 手機：模式卡片維持兩欄，圖示放到標題上面，整個選單不用捲太久 */
+    .mode-grid { gap: 10px; }
+    .mode-opt { grid-template-columns: 1fr; row-gap: 6px; padding: 12px; align-content: start; }
+    .mode-icon { grid-row: auto; width: 40px; height: 40px; font-size: 22px; }
+    .mode-desc { font-size: 11px; padding-right: 0; }
+    .menu-row { gap: 8px; }
+    .menu-row > .menu-label { min-width: 0; width: 100%; }
+    .seg { display: flex; width: 100%; }
+    .seg button { flex: 1; padding: 8px 6px; }
+    .menu-actions .hint { display: none; }       /* 手機沒有 Enter 鍵可按 */
+    .menu-actions .big { flex: 1; }
+    /* 開始按鈕黏在畫面底部，不用捲到最下面才按得到 */
+    .menu-actions {
+      position: sticky; bottom: -20px; margin: 0 -20px -20px; padding: 12px 20px 20px;
+      background: linear-gradient(to bottom, transparent, var(--panel) 30%);
+      border-radius: 0 0 16px 16px;
+    }
+    .menu-card { padding: 20px; border-radius: 16px; gap: 18px; }
+    .menu-head .logo { width: 46px; height: 46px; font-size: 28px; }
+    .menu-head h2 { font-size: 22px; }
+  }
+
+  /* ========================================================================
+     對局畫面
+     ======================================================================== */
   main {
-    display: flex; gap: 18px; padding: 18px 20px;
-    align-items: flex-start; flex-wrap: wrap;
+    display: flex; gap: 16px; padding: 18px 20px 28px;
+    align-items: flex-start; flex-wrap: wrap; justify-content: center;
   }
 
   /* --- 評估條（規格 §4.3：寬 30px，白色部分高度 =(value_white+1)/2）--- */
-  .eval-column { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-  #eval-cp, #turn-line {
-    font-family: Consolas, monospace; font-size: 13px;
-    height: 18px; line-height: 18px; margin-bottom: 6px;
+  /* 欄寬固定：分數文字（+12.34）比 30px 的條寬，不固定的話窄螢幕上會把棋盤擠到下一行 */
+  .eval-column { display: flex; flex-direction: column; align-items: center; width: 44px; flex: none; }
+  #eval-cp, .eval-label {
+    height: var(--bar-h); line-height: var(--bar-h);
+    font-family: var(--mono); font-size: 13px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
   }
-  #turn-line { color: var(--muted); }
-  .eval-column #eval-cp { margin-bottom: 0; }
+  .eval-label { color: var(--muted); font-size: 11px; font-weight: 600; font-family: inherit; }
   #eval-bar {
-    width: 30px; height: var(--board-size);
-    background: #2b2f37; border: 1px solid var(--line); border-radius: 3px;
+    width: 26px; height: var(--board-size);
+    background: var(--eval-dark); border-radius: 8px;
     position: relative; overflow: hidden;
+    box-shadow: var(--shadow-sm), inset 0 0 0 1px rgba(0, 0, 0, .15);
   }
   #eval-white {
     position: absolute; left: 0; right: 0; bottom: 0;
-    background: #eceef2; height: 50%; transition: height .35s ease;
+    background: var(--eval-light); height: 50%; transition: height .45s cubic-bezier(.3, .7, .2, 1);
   }
+  /* 棋盤翻面（你執黑）時白方在上面，評估條也跟著翻，才不會上下顛倒 */
+  #eval-bar.flipped #eval-white { bottom: auto; top: 0; }
   #eval-mid {
     position: absolute; left: 0; right: 0; top: 50%;
-    border-top: 1px dashed #8a90a0; pointer-events: none;
+    border-top: 1.5px solid rgba(240, 180, 41, .75); pointer-events: none;
   }
-  .eval-label { color: var(--muted); font-size: 11px; }
 
-  /* --- 棋盤與箭頭疊層 --- */
+  /* --- 棋盤欄 --- */
+  .board-col { width: var(--board-size); }
+  .player {
+    height: var(--bar-h); display: flex; align-items: center; gap: 10px;
+    padding: 0 2px; font-size: 14px; white-space: nowrap; overflow: hidden;
+  }
+  /* 頭像：白方 / 黑方的王，輪到誰走就亮一圈綠光 */
+  .player .avatar {
+    width: 30px; height: 30px; border-radius: 9px; flex: none;
+    display: grid; place-items: center; font-size: 20px; line-height: 1;
+    border: 1px solid var(--line); transition: box-shadow .2s;
+  }
+  .player .avatar.w { background: #fbfbfc; color: #1b1f27; }
+  .player .avatar.b { background: #262a33; color: #f4f5f7; border-color: #3a3f4b; }
+  .player.to-move .avatar { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--good); }
+  .player .pname { font-weight: 700; }
+  .player .captured { color: var(--muted); font-size: 17px; letter-spacing: -3px; }
+  .player .adv { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .player .thinking {
+    display: none; font-size: 12px; font-weight: 600; color: var(--accent);
+    padding: 2px 8px; border-radius: 999px; background: var(--accent-soft);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  .player.is-thinking .thinking { display: inline; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
   #board-wrap { position: relative; width: var(--board-size); }
   #board { width: var(--board-size); }
+  /* 棋盤本體：拿掉 chessboard.js 的深灰粗框，改成圓角加陰影 */
+  #board .board-b72b1 {
+    border: none; border-radius: 10px; overflow: hidden;
+    box-shadow: var(--shadow-lg);
+  }
   #arrows {
     position: absolute; left: 0; top: 0; width: 100%; height: 100%;
     pointer-events: none;   /* 箭頭不能擋住拖曳 */
+    z-index: 5;
   }
+
+  /* 格子標記：用 inset box-shadow 疊在格子底色上、棋子底下，不必改 chessboard.js 的 DOM */
+  #board [data-square] { position: relative; }
+  #board .hl-last  { box-shadow: inset 0 0 0 999px rgba(155, 199, 0, .38); }
+  #board .hl-sel   { box-shadow: inset 0 0 0 999px rgba(20, 110, 190, .45); }
+  #board .hl-check { background-image: radial-gradient(circle, rgba(255, 30, 30, .9) 0%, rgba(230, 0, 0, .45) 40%, transparent 72%); }
+  #board .hl-dot::after, #board .hl-cap::after {
+    content: ""; position: absolute; pointer-events: none; z-index: 2;
+  }
+  #board .hl-dot::after {   /* 可以走到的空格：中間一個小圓點 */
+    left: 36%; top: 36%; width: 28%; height: 28%;
+    border-radius: 50%; background: rgba(20, 30, 40, .28);
+  }
+  #board .hl-cap::after {   /* 可以吃的子：外圈圓環 */
+    inset: 3%; border-radius: 50%;
+    border: 5px solid rgba(20, 30, 40, .30);
+  }
+  body.can-move #board [data-square] { cursor: pointer; }
+
+  /* 疊在棋盤上的面板（升變選擇、對局結果）*/
+  .overlay {
+    position: absolute; inset: 0; z-index: 20; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 12, 16, .5);
+    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+    animation: fade-in .2s ease-out;
+  }
+  @keyframes fade-in { from { opacity: 0; } }
+  .overlay[hidden] { display: none; }
+  .promo-box {
+    display: flex; gap: 10px; padding: 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    box-shadow: var(--shadow-lg);
+  }
+  .promo-box button {
+    width: 72px; height: 72px; border-radius: 12px; cursor: pointer;
+    background: #ece6d8; border: 2px solid transparent; padding: 5px;
+  }
+  .promo-box button:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .promo-box img { width: 100%; height: 100%; }
+  .result-card {
+    min-width: 260px; padding: 26px 28px 22px; text-align: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+    box-shadow: var(--shadow-lg);
+    animation: menu-in .3s ease-out;
+  }
+  #result-title {
+    font-size: 30px; font-weight: 800; margin-bottom: 4px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #result-reason { color: var(--muted); margin-bottom: 16px; }
+  .result-card .row { justify-content: center; }
+
+  .below-board { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+  #turn-line { color: var(--muted); font-size: 13px; font-weight: 600; }
+  .review { display: flex; gap: 4px; padding: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .review button {
+    width: 34px; height: 28px; border-radius: 7px; cursor: pointer;
+    background: transparent; color: var(--text); border: none; font-size: 12px;
+  }
+  .review button:hover:not(:disabled) { background: var(--panel-2); color: var(--accent); }
+  .review button:disabled { opacity: .3; cursor: default; }
   #status { margin-top: 8px; min-height: 20px; color: var(--muted); }
-  #status.over { color: var(--good); font-weight: 600; }
+  #status.over { color: var(--good); font-weight: 700; }
 
   /* --- 右側資訊面板 --- */
-  aside { flex: 1; min-width: 300px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-  .card h2 {
-    font-size: 12px; margin: 0 0 8px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  aside { flex: 1; min-width: 300px; max-width: 440px; display: flex; flex-direction: column; gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; box-shadow: var(--shadow-sm);
   }
-  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+  /* 卡片標題：小字大寫，左邊一條漸層短線 */
+  .card h2, .card > summary {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; margin: 0 0 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 700;
+  }
+  .card h2::before {
+    content: ""; width: 3px; height: 12px; border-radius: 2px; flex: none;
+    background: linear-gradient(var(--accent), var(--accent-2));
+  }
+  details.card > summary { cursor: pointer; margin: 0; }
+  details.card[open] > summary { margin-bottom: 10px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
   .row label { color: var(--muted); min-width: 84px; }
-  input[type=range] { flex: 1; min-width: 110px; }
+  input[type=range] { flex: 1; min-width: 110px; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
   button.act {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
-    padding: 6px 12px; border-radius: 5px; cursor: pointer;
+    padding: 7px 14px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 600;
   }
-  button.act:hover { border-color: var(--accent); }
+  button.act:hover { border-color: var(--accent); color: var(--accent); }
   button.act:disabled { opacity: .4; cursor: not-allowed; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-color: transparent; color: #fff; box-shadow: 0 4px 14px var(--accent-soft);
+  }
+  button.primary:hover { color: #fff; border-color: transparent; transform: translateY(-1px); box-shadow: 0 6px 18px var(--accent-soft); }
 
-  #moves { max-height: 220px; overflow-y: auto; font-family: Consolas, monospace; font-size: 13px; }
+  #moves { max-height: 260px; overflow-y: auto; font-family: var(--mono); font-size: 13px; }
   #moves table { width: 100%; border-collapse: collapse; }
-  #moves td { padding: 2px 4px; }
+  #moves tr:nth-child(even) { background: var(--panel-2); }
+  #moves td { padding: 3px 4px; }
   #moves td.num { color: var(--muted); width: 34px; text-align: right; }
-  #moves span.ply { cursor: pointer; padding: 1px 5px; border-radius: 3px; display: inline-block; min-width: 56px; }
-  #moves span.ply:hover { background: var(--panel-2); }
+  #moves span.ply { cursor: pointer; padding: 1px 6px; border-radius: 5px; display: inline-block; min-width: 58px; font-weight: 600; }
+  #moves span.ply:hover { background: var(--accent-soft); }
   #moves span.ply.current { background: var(--accent); color: #fff; }
-  #moves .ev { color: var(--muted); font-size: 11px; }
+  #moves span.ply.current .judge { color: #fff; }
+  #moves .ev { color: var(--muted); font-size: 11px; font-weight: 400; }
 
   textarea, input[type=text] {
     width: 100%; background: var(--panel-2); color: var(--text);
-    border: 1px solid var(--line); border-radius: 5px; padding: 6px;
-    font-family: Consolas, monospace; font-size: 12px;
+    border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px;
+    font-family: var(--mono); font-size: 12px; resize: vertical;
   }
-  #cand { font-family: Consolas, monospace; font-size: 12px; line-height: 1.6; }
-  #cand .bar { display: inline-block; height: 8px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+  textarea:focus, input[type=text]:focus, select:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+  /* 候選著法：排名徽章｜著法｜長度條｜百分比｜（MCTS 的訪問次數）*/
+  #cand { display: flex; flex-direction: column; gap: 6px; }
+  #cand.hint { display: block; }
+  .cand-row {
+    display: grid; grid-template-columns: 22px 52px 1fr 48px auto; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 13px;
+  }
+  .cand-row .rank {
+    width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+    font-size: 11px; font-weight: 700; background: var(--panel-2); color: var(--muted);
+  }
+  .cand-row:first-child .rank { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+  .cand-row .track { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+  .cand-row .fill {
+    display: block; height: 100%; border-radius: 4px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  }
+  .cand-row:not(:first-child) .fill { opacity: .55; }
+  .cand-row .pct { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cand-row .n { color: var(--muted); font-size: 11px; }
+  .veto {
+    margin-top: 4px; padding: 7px 10px; border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--good); font-size: 12px;
+  }
   #banner {
-    display: none; margin: 0 20px; padding: 10px 14px;
-    background: #4a2020; border: 1px solid var(--bad); border-radius: 6px; color: #ffd9d6;
+    display: none; margin: 12px 20px 0; padding: 10px 14px; gap: 12px; align-items: flex-start;
+    background: var(--banner-bg); border: 1px solid var(--bad); border-radius: var(--radius-sm); color: var(--banner-fg);
   }
-  .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  #banner-text { flex: 1; }
+  #banner-close {
+    background: none; border: none; color: var(--banner-fg); font-size: 18px; line-height: 1;
+    cursor: pointer; padding: 0 2px;
+  }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .keys { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  kbd {
+    font-family: var(--mono); font-size: 11px; padding: 1px 5px;
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--panel-2);
+  }
   .mode-only { display: none; }
 
-  /* 筆電螢幕放不下 560px 棋盤 + 面板時縮小一號 */
-  @media (max-width: 1080px) { :root { --board-size: 440px; } }
-  @media (max-width: 780px)  { :root { --board-size: 340px; } }
+  select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 6px 10px; font-size: 13px; cursor: pointer;
+  }
+
+  /* --- 面板分頁 --- */
+  .tabs {
+    display: flex; gap: 2px; padding: 4px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+  }
+  .tabs button {
+    flex: 1; background: transparent; color: var(--muted); border: none;
+    padding: 8px 0; border-radius: var(--radius-sm); cursor: pointer; font-size: 14px; font-weight: 600;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.active { background: var(--accent-soft); color: var(--accent); }
+  .tab-page { display: none; flex-direction: column; gap: 12px; }
+  .tab-page.active { display: flex; animation: fade-in .2s ease-out; }
+  .sheet-handle { display: none; }
+
+  /* --- 棋鐘（在玩家列最右邊）--- */
+  .player .clock {
+    margin-left: auto; font-family: var(--mono); font-size: 18px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    padding: 4px 12px; border-radius: var(--radius-sm); background: var(--panel); color: var(--muted);
+    border: 1px solid var(--line); min-width: 80px; text-align: center;
+  }
+  .player .clock.running { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .player .clock.low { background: var(--bad); color: #fff; border-color: var(--bad); }
+
+  /* --- 覆盤：評分曲線、失誤標記、總結 --- */
+  #graph {
+    width: 100%; height: 130px; display: block; cursor: pointer;
+    background: var(--panel-2); border-radius: var(--radius-sm);
+  }
+  #graph .area  { fill: var(--text); opacity: .14; }
+  #graph .curve { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+  #graph .zero  { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+  #graph .cursor { stroke: var(--warn); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .judge { font-weight: 800; margin-left: 1px; }
+  .judge.inaccuracy, #graph .inaccuracy { color: var(--warn); fill: var(--warn); }
+  .judge.mistake,    #graph .mistake    { color: #f07b2a;     fill: #f07b2a; }
+  .judge.blunder,    #graph .blunder    { color: var(--bad);  fill: var(--bad); }
+  #summary table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #summary th, #summary td { padding: 5px 4px; text-align: center; }
+  #summary th:first-child, #summary td:first-child { text-align: left; font-weight: 600; }
+  #summary th { color: var(--muted); font-weight: 600; font-size: 11px; }
+  #summary tr + tr td { border-top: 1px solid var(--line); }
+  #summary .acc { font-size: 20px; font-weight: 800; }
+  .worst { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .worst button {
+    text-align: left; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 12px; cursor: pointer;
+    font-size: 13px; line-height: 1.5;
+  }
+  .worst button:hover { border-color: var(--accent); transform: translateX(2px); }
+  .worst .sub { color: var(--muted); font-size: 12px; }
+
+  /* --- 棋盤配色：覆寫 chessboard.js 的深淺格 class（木紋就是它的預設色）--- */
+  body[data-board="blue"]  #board .white-1e1d7 { background-color: #dee3e6; color: #8ca2ad; }
+  body[data-board="blue"]  #board .black-3c85d { background-color: #8ca2ad; color: #dee3e6; }
+  body[data-board="green"] #board .white-1e1d7 { background-color: #eeeed2; color: #769656; }
+  body[data-board="green"] #board .black-3c85d { background-color: #769656; color: #eeeed2; }
+
+  /* 無提示對戰：對局結束前不顯示任何提示。資料本來就不會畫出來，這裡只是把空框藏起來。
+     評估條用 visibility 而不是 display，棋盤才不會往左跳。 */
+  body.no-hints .eval-column { visibility: hidden; }
+  body.no-hints #hint-card { display: none; }
+
+  /* 系統設定「減少動態效果」時，關掉所有裝飾性動畫 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  /* 窄螢幕：面板掉到棋盤下面，棋盤吃滿寬度（扣掉評估條與左右留白）*/
+  @media (max-width: 1080px) {
+    aside { max-width: none; min-width: 0; flex-basis: 100%; }
+  }
+  @media (max-width: 700px) {
+    :root { --board-size: calc(100vw - 32px - 44px - 10px); --bar-h: 40px; }
+    main { padding: 12px 16px 20px; gap: 10px; justify-content: flex-start; }
+    header { padding: 8px 16px; gap: 10px; }
+    #health { display: none; }     /* 手機上太長，模型資訊在選單裡看得到 */
+    #banner { margin: 12px 16px 0; }
+    .promo-box button { width: 56px; height: 56px; }
+    .review button { width: 28px; }
+
+    /* 底部抽屜：收合時只露出分頁列與最上面一段，點把手（或切分頁）展開 */
+    body { padding-bottom: var(--sheet-h); }
+    aside {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+      max-width: none; max-height: var(--sheet-h); overflow-y: auto;
+      padding: 0 12px 16px; gap: 10px;
+      background: var(--bg); border-top: 1px solid var(--line);
+      border-radius: 18px 18px 0 0; box-shadow: 0 -8px 28px var(--shadow);
+      transition: max-height .25s ease;
+    }
+    aside.expanded { max-height: 85vh; }
+    .sheet-handle {
+      display: flex; justify-content: center; align-items: center;
+      position: sticky; top: 0; z-index: 1; width: 100%; height: 22px;
+      background: var(--bg); border: none; cursor: pointer; padding: 0;
+    }
+    .sheet-handle span { width: 42px; height: 5px; border-radius: 3px; background: var(--line); }
+    .tabs { position: sticky; top: 22px; z-index: 1; }
+  }
 </style>
 </head>
 <body>
 
+<!-- 開局選單：打開頁面（或按「☰ 選單」）時先選模式與對局設定，按「開始」才進棋盤 -->
+<div id="menu" class="menu-screen" hidden>
+  <div class="menu-card">
+    <div class="menu-head">
+      <span class="logo">♞</span>
+      <div>
+        <h2>chess-ai</h2>
+        <div class="tagline">跟自己訓練的神經網路下一盤西洋棋</div>
+        <span id="menu-model">載入模型資訊中…</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="menu-label">選擇模式</div>
+      <div class="mode-grid" id="mode-grid">
+        <button class="mode-opt" data-mode="play">
+          <span class="mode-icon">♞</span><b>對弈</b>
+          <span class="mode-desc">有箭頭與評估條，邊下邊看 AI 在想什麼</span>
+        </button>
+        <button class="mode-opt" data-mode="blind">
+          <span class="mode-icon">♚</span><b>對戰（無提示）</b>
+          <span class="mode-desc">正式對局，沒有任何提示，結束後才揭曉評分與失誤</span>
+        </button>
+        <button class="mode-opt" data-mode="auto">
+          <span class="mode-icon">▶</span><b>自動播放</b>
+          <span class="mode-desc">AI 自己跟自己下，看它每一步怎麼想</span>
+        </button>
+        <button class="mode-opt" data-mode="analyse">
+          <span class="mode-icon">⌕</span><b>分析</b>
+          <span class="mode-desc">貼上 FEN，看模型怎麼評估這個盤面</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="menu-section">
+    <div class="menu-opts" data-for="play blind">
+      <div class="menu-row">
+        <span class="menu-label">執色</span>
+        <div class="seg" id="menu-color">
+          <button data-v="w" title="白方先走">♔ 白方</button>
+          <button data-v="b">♚ 黑方</button>
+          <button data-v="random">隨機</button>
+        </div>
+      </div>
+      <div class="menu-row">
+        <span class="menu-label">棋鐘</span>
+        <select id="menu-clock"></select>
+      </div>
+    </div>
+
+    <div class="menu-opts" data-for="play blind auto">
+      <div class="menu-row">
+        <span class="menu-label">AI 強度</span>
+        <div class="seg" id="menu-strength">
+          <button data-v="fast">快速</button>
+          <button data-v="normal">標準</button>
+          <button data-v="strong">強</button>
+        </div>
+      </div>
+      <div class="hint" id="menu-strength-hint"></div>
+    </div>
+
+    <div class="menu-opts" data-for="analyse">
+      <div class="menu-label">盤面 FEN（留白 = 標準起始盤面）</div>
+      <textarea id="menu-fen" rows="2" placeholder="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></textarea>
+    </div>
+    </div>
+
+    <div class="menu-actions">
+      <span class="hint"><kbd>Enter</kbd> 開始</span>
+      <button class="act" id="menu-resume">繼續目前對局</button>
+      <button class="act primary big" id="menu-start">開始對局 →</button>
+    </div>
+  </div>
+</div>
+
 <header>
-  <h1>chess-ai 網頁棋盤</h1>
+  <span class="logo">♞</span>
+  <h1>chess-ai</h1>
+  <span class="mode-chip" id="mode-label"></span>
   <span id="health">載入中…</span>
+  <button class="act" id="btn-menu">☰ 選單</button>
 </header>
 
-<div id="banner"></div>
+<div id="banner"><span id="banner-text"></span><button id="banner-close" title="關閉">×</button></div>
 
-<nav>
-  <button data-mode="play"    class="active">對弈</button>
-  <button data-mode="auto">自動播放</button>
-  <button data-mode="analyse">分析</button>
-</nav>
 
 <main>
-  <!-- 評估條：白色部分高度 =(value_white+1)/2，中間有 50% 參考線 -->
+  <!-- 評估條：白色部分高度 =(value_white+1)/2，中間有 50% 參考線。
+       上下的文字跟玩家列等高，兩欄才會對齊。 -->
   <div class="eval-column">
     <div id="eval-cp">0.00</div>
     <div id="eval-bar">
       <div id="eval-white"></div>
       <div id="eval-mid"></div>
     </div>
-    <div class="eval-label">白方</div>
+    <div class="eval-label" id="eval-label">白方</div>
   </div>
 
-  <div>
-    <!-- 這一行跟評估條上方的 cp 等高，兩欄的頂端才會對齊 -->
-    <div id="turn-line">準備中…</div>
+  <div class="board-col">
+    <div class="player" id="player-top"></div>
     <div id="board-wrap">
       <div id="board"></div>
       <svg id="arrows"></svg>
+      <!-- 升變選擇 -->
+      <div class="overlay" id="promo" hidden><div class="promo-box" id="promo-box"></div></div>
+      <!-- 對局結果 -->
+      <div class="overlay" id="result" hidden>
+        <div class="result-card">
+          <div id="result-title"></div>
+          <div id="result-reason"></div>
+          <div class="row">
+            <button class="act primary" id="btn-result-new">再來一局</button>
+            <button class="act" id="btn-result-review">看覆盤</button>
+            <button class="act" id="btn-result-close">看棋盤</button>
+            <button class="act" id="btn-result-menu">回選單</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="player" id="player-bottom"></div>
+    <div class="below-board">
+      <div id="turn-line">準備中…</div>
+      <div class="review">
+        <button id="nav-first" title="起始盤面（Home）">⏮</button>
+        <button id="nav-prev"  title="上一步（←）">◀</button>
+        <button id="nav-next"  title="下一步（→）">▶</button>
+        <button id="nav-last"  title="最新盤面（End）">⏭</button>
+      </div>
     </div>
     <div id="status"></div>
   </div>
 
-  <aside>
-    <div class="card">
-      <h2 id="arrow-title">Policy 機率</h2>
-      <div id="cand" class="hint">尚未分析。</div>
-      <div class="row">
-        <label>箭頭數量</label>
-        <input type="range" id="topk" min="1" max="8" value="5">
-        <span id="topk-val">5</span>
-      </div>
+  <!-- 右側面板：分成「對局 / 覆盤 / 設定」三頁，不再一路往下長。
+       手機上整個面板變成可以往上拉的底部抽屜（見 CSS 的 max-width: 700px 那段）。 -->
+  <aside id="panel">
+    <button class="sheet-handle" id="sheet-handle" title="展開 / 收合"><span></span></button>
+    <div class="tabs" id="tabs">
+      <button data-tab="game" class="active">對局</button>
+      <button data-tab="review">覆盤</button>
+      <button data-tab="settings">設定</button>
     </div>
 
-    <div class="card">
-      <h2>控制</h2>
-      <!-- 對弈模式 -->
-      <div class="mode-only" data-for="play">
-        <div class="row">
-          <button class="act primary" id="btn-new">新的一局</button>
-          <button class="act" id="btn-flip">換邊（AI 先走）</button>
-          <button class="act" id="btn-undo">悔棋</button>
+    <!-- 對局 -->
+    <div class="tab-page" data-page="game">
+      <div class="card">
+        <h2>控制</h2>
+        <!-- 對弈 / 無提示對戰 -->
+        <div class="mode-only" data-for="play blind">
+          <div class="row">
+            <button class="act primary" id="btn-new">新的一局（執白）</button>
+            <button class="act" id="btn-flip">執黑（AI 先走）</button>
+            <button class="act" id="btn-undo">悔棋</button>
+          </div>
+          <div class="hint mode-only" data-for="play">
+            拖曳或點擊棋子走棋。AI 落子前會先把箭頭停留一下，讓你看見它在考慮什麼。
+          </div>
+          <div class="hint mode-only" data-for="blind">
+            正式對戰：沒有箭頭、沒有評估條，也看不到 AI 打算走哪一步。
+            對局結束後才揭曉每一步的評分，可以到「覆盤」頁看失誤。
+          </div>
         </div>
-        <div class="hint">拖曳棋子走棋。AI 落子前會先把箭頭停留 800 ms，讓你看見它在考慮什麼。</div>
+        <!-- 自動播放模式 -->
+        <div class="mode-only" data-for="auto">
+          <div class="row">
+            <button class="act primary" id="btn-auto">▶ 播放</button>
+            <button class="act" id="btn-step">單步</button>
+            <button class="act" id="btn-auto-reset">重設</button>
+          </div>
+          <div class="row">
+            <label>每步間隔</label>
+            <input type="range" id="delay" min="200" max="4000" step="100" value="1500">
+            <span id="delay-val">1500 ms</span>
+          </div>
+          <div class="hint">AI 自我對弈。想看不一樣的棋路就到「設定」把隨機性拉上去。</div>
+        </div>
+        <!-- 分析模式 -->
+        <div class="mode-only" data-for="analyse">
+          <textarea id="fen-input" rows="2" placeholder="貼上 FEN，例如 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></textarea>
+          <div class="row">
+            <button class="act primary" id="btn-load-fen">載入並分析</button>
+            <button class="act" id="btn-start-fen">起始盤面</button>
+          </div>
+          <div class="hint">分析模式只看不走棋。</div>
+        </div>
       </div>
-      <!-- 自動播放模式 -->
-      <div class="mode-only" data-for="auto">
+
+      <div class="card" id="hint-card">
+        <h2 id="arrow-title">Policy 機率</h2>
+        <div id="cand" class="hint">尚未分析。</div>
         <div class="row">
-          <button class="act primary" id="btn-auto">▶ 播放</button>
-          <button class="act" id="btn-step">單步</button>
-          <button class="act" id="btn-auto-reset">重設</button>
+          <label>箭頭數量</label>
+          <input type="range" id="topk" min="1" max="8" value="5">
+          <span id="topk-val">5</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>著法</h2>
+        <div id="moves" class="hint">還沒有著法。</div>
+        <div class="keys"><kbd>←</kbd> <kbd>→</kbd> 逐步回顧，<kbd>Home</kbd> / <kbd>End</kbd> 跳到頭尾，<kbd>Esc</kbd> 取消選取</div>
+      </div>
+    </div>
+
+    <!-- 覆盤 -->
+    <div class="tab-page" data-page="review">
+      <div class="card">
+        <h2>評分曲線（白方視角，點一下跳到那一手）</h2>
+        <svg id="graph" viewBox="0 0 400 130" preserveAspectRatio="none"></svg>
+        <div class="hint" id="graph-hint"></div>
+      </div>
+      <div class="card">
+        <h2>對局總結</h2>
+        <div id="summary" class="hint">還沒有著法。</div>
+      </div>
+      <div class="card">
+        <h2>匯出</h2>
+        <input type="text" id="fen-out" readonly>
+        <div class="row">
+          <button class="act" id="btn-copy-fen">複製 FEN</button>
+          <button class="act" id="btn-pgn">匯出 PGN</button>
+          <span id="copy-msg" class="hint"></span>
+        </div>
+      </div>
+      <div class="card" id="pgn-card" style="display:none">
+        <h2>PGN（可直接貼到 lichess.org/paste）</h2>
+        <textarea id="pgn-out" rows="8" readonly></textarea>
+        <div class="row">
+          <button class="act" id="btn-copy-pgn">複製</button>
+          <button class="act" id="btn-download-pgn">下載 .pgn</button>
+          <button class="act" id="btn-close-pgn">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 設定（全部存在瀏覽器裡，重新整理後保留）-->
+    <div class="tab-page" data-page="settings">
+      <div class="card">
+        <h2>外觀</h2>
+        <div class="row">
+          <label for="set-theme">介面主題</label>
+          <select id="set-theme">
+            <option value="system">跟隨系統</option>
+            <option value="dark">暗色</option>
+            <option value="light">亮色</option>
+          </select>
         </div>
         <div class="row">
-          <label>每步間隔</label>
-          <input type="range" id="delay" min="200" max="4000" step="100" value="1500">
-          <span id="delay-val">1500 ms</span>
+          <label for="set-board">棋盤配色</label>
+          <select id="set-board">
+            <option value="wood">木紋</option>
+            <option value="blue">藍灰</option>
+            <option value="green">綠色</option>
+          </select>
         </div>
-        <div class="hint">AI 自我對弈。想看不一樣的棋路就把下面的「隨機性」拉上去。</div>
-      </div>
-      <!-- 分析模式 -->
-      <div class="mode-only" data-for="analyse">
-        <textarea id="fen-input" rows="2" placeholder="貼上 FEN，例如 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></textarea>
         <div class="row">
-          <button class="act primary" id="btn-load-fen">載入並分析</button>
-          <button class="act" id="btn-start-fen">起始盤面</button>
+          <label for="set-pieces">棋子樣式</label>
+          <select id="set-pieces"></select>
         </div>
-        <div class="hint">分析模式只看不走棋。</div>
+        <div class="row">
+          <label for="set-sound">音效</label>
+          <input type="checkbox" id="set-sound">
+          <button class="act" id="btn-test-sound">試聽</button>
+        </div>
       </div>
-    </div>
 
-    <div class="card">
-      <h2>搜尋方式</h2>
-      <div class="row">
-        <label><input type="checkbox" id="use-mcts"> 使用 MCTS</label>
-        <input type="text" id="sims" value="400" style="width:70px" title="每步模擬次數">
-        <button class="act" id="btn-apply-search">套用</button>
+      <div class="card">
+        <h2>棋鐘</h2>
+        <div class="row">
+          <label for="set-clock">時間控制</label>
+          <select id="set-clock">
+            <option value="none">不計時</option>
+            <option value="1+0">1 分鐘</option>
+            <option value="3+2">3 分 + 每步 2 秒</option>
+            <option value="5+3">5 分 + 每步 3 秒</option>
+            <option value="10+0">10 分鐘</option>
+            <option value="15+10">15 分 + 每步 10 秒</option>
+          </select>
+        </div>
+        <div class="hint">
+          只在「對弈」與「對戰（無提示）」生效，從下一局開始算。第一步不計時，時間用完判負。
+          計時對局不能悔棋；AI 的思考時間（含箭頭停留）也算在它的鐘上。
+        </div>
       </div>
-      <div class="row">
-        <label>隨機性</label>
-        <input type="range" id="temp" min="0" max="150" step="5" value="0">
-        <span id="temp-val">0.00</span>
-      </div>
-      <div class="hint" style="margin-bottom:8px">
-        隨機性 &gt; 0 時依機率抽樣，每一局都會不一樣；0 是完全照最高分走（對局與自動播放都適用）。
-      </div>
-      <div class="hint">
-        policy 是「直覺想走哪裡」，MCTS 訪問次數是「想過之後認為哪裡值得」。
-        兩者意義不同，箭頭上方的標題會標明目前顯示哪一種。
-      </div>
-    </div>
 
-    <div class="card">
-      <h2>著法</h2>
-      <div id="moves" class="hint">還沒有著法。</div>
-      <div class="row">
-        <button class="act" id="btn-latest">回到最新</button>
-        <button class="act" id="btn-pgn">匯出 PGN</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>FEN</h2>
-      <input type="text" id="fen-out" readonly>
-      <div class="row">
-        <button class="act" id="btn-copy-fen">複製 FEN</button>
-        <span id="copy-msg" class="hint"></span>
-      </div>
-    </div>
-
-    <div class="card" id="pgn-card" style="display:none">
-      <h2>PGN（可直接貼到 lichess.org/paste）</h2>
-      <textarea id="pgn-out" rows="8" readonly></textarea>
-      <div class="row">
-        <button class="act" id="btn-copy-pgn">複製</button>
-        <button class="act" id="btn-download-pgn">下載 .pgn</button>
-        <button class="act" id="btn-close-pgn">關閉</button>
+      <div class="card">
+        <h2>搜尋方式與隨機性</h2>
+        <div class="row">
+          <label><input type="checkbox" id="use-mcts"> 使用 MCTS</label>
+          <input type="text" id="sims" value="400" style="width:70px" title="每步模擬次數">
+          <button class="act" id="btn-apply-search">套用</button>
+        </div>
+        <div class="row">
+          <label>隨機性</label>
+          <input type="range" id="temp" min="0" max="150" step="5" value="0">
+          <span id="temp-val">0.00</span>
+        </div>
+        <div class="hint" style="margin-bottom:8px">
+          隨機性 &gt; 0 時依機率抽樣，每一局都會不一樣；0 是完全照最高分走（對局與自動播放都適用）。
+        </div>
+        <div class="hint">
+          policy 是「直覺想走哪裡」，MCTS 訪問次數是「想過之後認為哪裡值得」。
+          兩者意義不同，箭頭上方的標題會標明目前顯示哪一種。
+        </div>
       </div>
     </div>
   </aside>
@@ -281,14 +895,69 @@
 // 常數
 // ---------------------------------------------------------------------------
 
-// 棋盤圖片也從 CDN 載（cdnjs 沒有放圖，所以改用 jsDelivr 的 GitHub 鏡像）
-var PIECE_THEME =
-  "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@v1.0.0/website/img/chesspieces/wikipedia/{piece}.png";
+// 棋子圖片從 CDN 載（cdnjs 沒有放圖，所以用 jsDelivr 的 GitHub 鏡像）。
+// {piece} 會被 chessboard.js 換成 wP、bK 之類的代號。
+var PIECE_SETS = {
+  wikipedia: { name: "經典（wikipedia）",
+    url: "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@v1.0.0/website/img/chesspieces/wikipedia/{piece}.png" },
+  alpha: { name: "Alpha",
+    url: "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@v1.0.0/website/img/chesspieces/alpha/{piece}.png" },
+  cburnett: { name: "cburnett（lichess 預設）",
+    url: "https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/cburnett/{piece}.svg" },
+  merida: { name: "Merida",
+    url: "https://cdn.jsdelivr.net/gh/lichess-org/lila@master/public/piece/merida/{piece}.svg" }
+};
 
-var ARROW_DWELL_MS = 800;   // 規格 §4.3：AI 落子前先讓箭頭停留 800 ms
-var LABEL_MIN_PROB = 0.03;  // 機率低於這個值就不標百分比，避免擠成一團
-var API_TOP_K = 8;          // 一律跟後端要 8 個候選，滑桿只影響「畫幾條」，不用重新請求
+// 棋鐘：[起始秒數, 每步加秒]
+var CLOCKS = {
+  "none": null, "1+0": [60, 0], "3+2": [180, 2], "5+3": [300, 3], "10+0": [600, 0], "15+10": [900, 10]
+};
+var CLOCK_TICK_MS = 100;
+var LOW_TIME_MS = 10000;       // 剩 10 秒以下：鐘變紅、響一聲提醒
+
+// 設定存在 localStorage。改了欄位就把版本號加一，舊的設定才不會混進來。
+var SETTINGS_KEY = "chess-ai.settings.v1";
+var DEFAULT_SETTINGS = {
+  mode: "play", tab: "game", theme: "system", board: "wood", pieces: "wikipedia",
+  sound: true, clock: "none", topK: 5, temperature: 0, autoDelay: 1500,
+  color: "w", strength: "fast"
+};
+
+// 失誤判定：用「走棋方的勝率掉了多少」分級，門檻跟 lichess 一樣（10 / 20 / 30 個百分點）。
+// 勝率 = (value + 1) / 2，value 是模型對「這一方最後得分」的估計。
+var JUDGES = [
+  { min: 0.30, sym: "??", name: "大失誤", cls: "blunder" },
+  { min: 0.20, sym: "?",  name: "失誤",   cls: "mistake" },
+  { min: 0.10, sym: "?!", name: "不精確", cls: "inaccuracy" }
+];
+var WORST_SHOWN = 3;           // 總結裡列出最大的幾個失誤
+
+var MODE_NAMES = { play: "對弈", blind: "對戰（無提示）", auto: "自動播放", analyse: "分析" };
+// 選單的「AI 強度」：對應到 /api/config 的搜尋方式（設定頁仍可自訂模擬次數）
+var STRENGTHS = {
+  fast:   { mcts: false, sims: null, hint: "只看 policy 的直覺，幾乎瞬間落子，最弱。" },
+  normal: { mcts: true,  sims: 400,  hint: "MCTS 每步 400 次模擬，想過再走。" },
+  strong: { mcts: true,  sims: 1600, hint: "MCTS 每步 1600 次模擬，最強，但每步要多等一下。" }
+};
+
+var ARROW_DWELL_MS = 800;      // 規格 §4.3：AI 落子前先讓箭頭停留 800 ms（含思考時間）
+var BLIND_MIN_THINK_MS = 400;  // 無提示模式沒有箭頭可看，但 AI 瞬間落子會像棋子閃一下
+var LABEL_MIN_PROB = 0.03;     // 機率低於這個值就不標百分比，避免擠成一團
+var API_TOP_K = 8;             // 一律跟後端要 8 個候選，滑桿只影響「畫幾條」，不用重新請求
 var SVG_NS = "http://www.w3.org/2000/svg";
+var STANDARD_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+var MODES = ["play", "blind", "auto", "analyse"];
+var FILES = "abcdefgh";
+// 玩家列上的子力差：標準子力價值與開局時各兵種的數量
+var PIECE_VALUE = { p: 1, n: 3, b: 3, r: 5, q: 9 };
+var START_COUNT = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+var CAPTURE_ORDER = ["q", "r", "b", "n", "p"];
+// 被吃掉的子用 Unicode 棋子符號畫，不用多載圖片
+var GLYPH = {
+  w: { p: "♙", n: "♘", b: "♗", r: "♖", q: "♕" },
+  b: { p: "♟", n: "♞", b: "♝", r: "♜", q: "♛" }
+};
+var PROMO_PIECES = ["q", "r", "b", "n"];
 
 // ---------------------------------------------------------------------------
 // 狀態
@@ -298,9 +967,23 @@ var state = {
   mode: "play",
   game: null,          // chess.js 實例：負責拖曳合法性、SAN、悔棋
   board: null,         // chessboard.js 實例：只負責畫
+  startFen: STANDARD_FEN,  // 這一局的起始盤面；後端用「startFen + 整串著法」重建，才看得到三次重複
   history: [],         // 每一步的完整紀錄，匯出 PGN 時原封不動送回後端
   current: null,       // 目前盤面的分析結果
-  viewPly: null,       // null = 看最新盤面；數字 = 正在回顧第 n 步之前的盤面
+  // 盤面世代：每次盤面改變（走棋、悔棋、新局、載入 FEN）就 +1。
+  // 分析請求回來時世代不同 = 那是舊盤面的結果，直接丟掉，不能畫到新盤面上。
+  gen: 0,
+  busyToken: null,     // 目前是哪一次 aiStep 持有 busy（新局會直接搶走，舊的那次收尾時不能亂清）
+  viewPly: null,       // null = 看最新盤面；數字 n = 正在回顧「走完前 n 步」的盤面
+  selected: null,      // 點擊走棋：目前選中的格子（例如 "e2"）
+  wasSelected: false,  // 這次按下去的格子本來就是選中的 → 放開時取消選取
+  pendingPromo: null,  // 升變選擇視窗開著時 = { from, to }
+  resultDismissedGen: -1,  // 在這個盤面世代按過「看棋盤」，結果面板就不再跳出來
+  settings: null,      // 使用者設定（啟動時從 localStorage 讀），見 DEFAULT_SETTINGS
+  // 棋鐘：null = 不計時；否則 { w, b: 剩餘毫秒, inc: 每步加的毫秒, side: 正在走的一方, last: 上次結算的時間 }
+  clock: null,
+  flagged: null,       // 時間用完的那一方（"w" / "b"），沒有就是 null
+  lowTimeWarned: false,
   topK: 5,
   temperature: 0,
   autoDelay: 1500,
@@ -318,11 +1001,25 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
 function $id(id) { return document.getElementById(id); }
 
-function showBanner(text) {
-  var el = $id("banner");
-  el.textContent = text;
-  el.style.display = "block";
+function isVsMode(mode) { return mode === "play" || mode === "blind"; }
+
+// 超時也算結束。chess.js 不知道棋鐘，所以要另外看 state.flagged。
+function isGameOver() { return state.game.game_over() || state.flagged !== null; }
+
+// 無提示對戰、而且對局還沒結束 → 不畫箭頭、評估條、候選著法，也不透露 AI 打算走哪步。
+// 這裡是唯一的判斷點：各個繪圖函式自己檢查，不靠 CSS 藏（藏起來的資料還是在 DOM 裡）。
+function hintsHidden() { return state.mode === "blind" && !isGameOver(); }
+
+function applyHintVisibility() {
+  document.body.classList.toggle("no-hints", hintsHidden());
 }
+
+function showBanner(text) {
+  $id("banner-text").textContent = text;
+  $id("banner").style.display = "flex";
+}
+
+function hideBanner() { $id("banner").style.display = "none"; }
 
 async function api(path, body) {
   var opts = { method: "GET" };
@@ -362,6 +1059,7 @@ function clearArrows() {
 
 function drawArrows(moves) {
   clearArrows();
+  if (hintsHidden()) { return; }
   if (!moves || !moves.length) { return; }
 
   var wrap = $id("board-wrap").getBoundingClientRect();
@@ -438,20 +1136,184 @@ function drawOneArrow(svg, wrap, m, isBest) {
 }
 
 // ---------------------------------------------------------------------------
+// 棋盤周邊：格子標記、玩家列、結果面板、回顧按鈕
+// ---------------------------------------------------------------------------
+
+// 目前畫面上顯示的是走完前幾步的盤面（最新盤面 = 全部步數）
+function currentPly() {
+  return state.viewPly === null ? state.history.length : state.viewPly;
+}
+
+// 走完前 n 步的盤面（chess.js 沒辦法直接跳到第 n 步，只能從頭重播）
+function gameAtPly(n) {
+  if (n === state.history.length) { return state.game; }
+  var g = new Chess(state.startFen);
+  for (var i = 0; i < n; i++) {
+    var u = state.history[i].uci;
+    g.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.slice(4) || "q" });
+  }
+  return g;
+}
+
+// 畫面上顯示的那個盤面
+function displayedGame() { return gameAtPly(currentPly()); }
+
+function kingSquare(g, color) {
+  var rows = g.board();   // rows[0] 是第 8 橫列
+  for (var r = 0; r < 8; r++) {
+    for (var c = 0; c < 8; c++) {
+      var p = rows[r][c];
+      if (p && p.type === "k" && p.color === color) { return FILES[c] + (8 - r); }
+    }
+  }
+  return null;
+}
+
+function markSquare(square, cls) {
+  var el = document.querySelector("#board .square-" + square);
+  if (el) { el.classList.add(cls); }
+}
+
+// 重畫所有跟「目前顯示的盤面」有關的周邊元素。
+// chessboard.js 翻面或 resize 時會重建格子 DOM，所以標記不能只加一次，每次都要重上。
+function refreshBoardDecor() {
+  var g = displayedGame();
+  document.querySelectorAll("#board [data-square]").forEach(function (el) {
+    el.classList.remove("hl-last", "hl-check", "hl-sel", "hl-dot", "hl-cap");
+  });
+
+  var ply = currentPly();
+  if (ply > 0) {
+    var last = state.history[ply - 1].uci;
+    markSquare(last.slice(0, 2), "hl-last");
+    markSquare(last.slice(2, 4), "hl-last");
+  }
+  if (g.in_check()) { markSquare(kingSquare(g, g.turn()), "hl-check"); }
+  if (state.selected) {
+    markSquare(state.selected, "hl-sel");
+    state.game.moves({ square: state.selected, verbose: true }).forEach(function (m) {
+      // 吃過路兵的目標格是空的，但它也是吃子，一樣畫圓環
+      markSquare(m.to, (m.captured ? "hl-cap" : "hl-dot"));
+    });
+  }
+  document.body.classList.toggle("can-move", canHumanMoveNow());
+
+  var flipped = state.board.orientation() === "black";
+  $id("eval-bar").classList.toggle("flipped", flipped);
+  $id("eval-label").textContent = flipped ? "黑方" : "白方";
+
+  updatePlayers(g);
+  updateResultOverlay();
+  updateNavButtons();
+}
+
+// 被吃掉的子與子力差。回傳 { w: {captured: [...], score}, b: {...} }，
+// captured 是「這一方吃掉的對方棋子」。
+function materialInfo(g) {
+  var count = { w: { p: 0, n: 0, b: 0, r: 0, q: 0 }, b: { p: 0, n: 0, b: 0, r: 0, q: 0 } };
+  g.board().forEach(function (row) {
+    row.forEach(function (p) { if (p && p.type !== "k") { count[p.color][p.type]++; } });
+  });
+  var info = { w: { captured: [], score: 0 }, b: { captured: [], score: 0 } };
+  ["w", "b"].forEach(function (color) {
+    var enemy = color === "w" ? "b" : "w";
+    CAPTURE_ORDER.forEach(function (t) {
+      // 升變會讓某兵種多於開局數量，減出負數就當作沒被吃
+      var lost = Math.max(0, START_COUNT[t] - count[enemy][t]);
+      for (var i = 0; i < lost; i++) { info[color].captured.push(GLYPH[enemy][t]); }
+      info[color].score += PIECE_VALUE[t] * count[color][t];
+    });
+  });
+  return info;
+}
+
+function playerLabel(color) {
+  var side = color === "w" ? "白方" : "黑方";
+  if (isVsMode(state.mode)) { return side + " · " + (color === state.humanColor ? "你" : "AI"); }
+  if (state.mode === "auto") { return side + " · AI"; }
+  return side;
+}
+
+function updatePlayers(g) {
+  g = g || displayedGame();
+  var bottom = state.board.orientation() === "black" ? "b" : "w";
+  var top = bottom === "w" ? "b" : "w";
+  var mat = materialInfo(g);
+  [["player-top", top], ["player-bottom", bottom]].forEach(function (pair) {
+    var el = $id(pair[0]), color = pair[1];
+    var enemy = color === "w" ? "b" : "w";
+    var adv = mat[color].score - mat[enemy].score;
+    el.innerHTML =
+      "<span class='avatar " + color + "'>" + (color === "w" ? "♔" : "♚") + "</span>" +
+      "<span class='pname'>" + playerLabel(color) + "</span>" +
+      "<span class='thinking'>思考中…</span>" +
+      "<span class='captured'>" + mat[color].captured.join("") + "</span>" +
+      (adv > 0 ? "<span class='adv'>+" + adv + "</span>" : "") +
+      (state.clock ? "<span class='clock' data-color='" + color + "'></span>" : "");
+    var over = (g === state.game) ? isGameOver() : g.game_over();
+    el.classList.toggle("to-move", !over && g.turn() === color);
+    // 只有看最新盤面時才顯示「思考中」，回顧舊盤面時那不是這個盤面的事
+    el.classList.toggle("is-thinking",
+      state.busy && state.viewPly === null && state.game.turn() === color);
+  });
+  renderClocks();
+}
+
+// 對局結果（用 chess.js 判斷；它有完整歷史，三次重複也判得出來）
+function resultInfo(g) {
+  if (g === state.game && state.flagged) {
+    return { winner: state.flagged === "w" ? "b" : "w", reason: "超時" };
+  }
+  if (!g.game_over()) { return null; }
+  if (g.in_checkmate()) {
+    var winner = g.turn() === "w" ? "b" : "w";
+    return { winner: winner, reason: "將死" };
+  }
+  var reason = g.in_stalemate() ? "逼和（無子可動）"
+             : g.insufficient_material() ? "子力不足"
+             : g.in_threefold_repetition() ? "三次重複"
+             : "五十步規則";
+  return { winner: null, reason: reason };
+}
+
+function updateResultOverlay() {
+  var info = (state.viewPly === null && state.mode !== "analyse") ? resultInfo(state.game) : null;
+  var show = !!info && state.resultDismissedGen !== state.gen;
+  $id("result").hidden = !show;
+  if (!show) { return; }
+  var title;
+  if (!info.winner) { title = "和局"; }
+  else if (isVsMode(state.mode)) { title = info.winner === state.humanColor ? "你贏了！" : "AI 獲勝"; }
+  else { title = (info.winner === "w" ? "白方" : "黑方") + "勝"; }
+  $id("result-title").textContent = title;
+  $id("result-reason").textContent = info.reason +
+    (state.mode === "blind" ? " · 提示已揭曉，可以覆盤" : "");
+}
+
+function updateNavButtons() {
+  var ply = currentPly(), n = state.history.length;
+  $id("nav-first").disabled = $id("nav-prev").disabled = (ply === 0);
+  $id("nav-next").disabled = $id("nav-last").disabled = (ply >= n);
+}
+
+// ---------------------------------------------------------------------------
 // 畫面更新
 // ---------------------------------------------------------------------------
 
 function updateEval(res) {
+  if (hintsHidden()) { res = null; }   // 無提示模式：歸零，不留任何數字在畫面上
   // 前端只認 value_white，視角轉換全部在後端做完了
   var vw = res ? res.value_white : 0;
   $id("eval-white").style.height = ((vw + 1) / 2 * 100).toFixed(1) + "%";
   var cp = res ? res.cp : 0;
   $id("eval-cp").textContent = (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
-  $id("eval-cp").style.color = cp > 30 ? "#eceef2" : (cp < -30 ? "#9aa0ad" : "var(--muted)");
+  $id("eval-cp").style.color = Math.abs(cp) > 30 ? "var(--text)" : "var(--muted)";
 }
 
 function updateCandidates(res) {
   var el = $id("cand");
+  el.className = "hint";   // 沒有資料時是一行說明文字；有資料時下面會拿掉
+  if (hintsHidden()) { el.textContent = "無提示模式：對局結束後揭曉。"; return; }
   $id("arrow-title").textContent =
     (res && res.source === "mcts") ? "MCTS 訪問次數" : "Policy 機率";
   if (!res || !res.moves || !res.moves.length) {
@@ -459,50 +1321,71 @@ function updateCandidates(res) {
     return;
   }
   var html = "";
-  res.moves.slice(0, state.topK).forEach(function (m, i) {
+  var shown = res.moves.slice(0, state.topK);
+  // 長度條以第一名為滿格：絕對機率常常只有一成多，照比例畫的話每條都短得看不出差別
+  var maxProb = Math.max(shown[0].prob, 1e-6);
+  shown.forEach(function (m, i) {
     var pct = (m.prob * 100).toFixed(1);
-    var extra = (m.visits !== null && m.visits !== undefined) ? " <span class='ev'>N=" + m.visits + "</span>" : "";
-    html += "<div>" + (i + 1) + ". <b>" + m.san + "</b> " + pct + "%" +
-            " <span class='bar' style='width:" + Math.max(2, m.prob * 120) + "px'></span>" + extra + "</div>";
+    var visits = (m.visits !== null && m.visits !== undefined) ? "<span class='n'>N=" + m.visits + "</span>" : "";
+    html += "<div class='cand-row'>" +
+            "<span class='rank'>" + (i + 1) + "</span>" +
+            "<b class='san'>" + m.san + "</b>" +
+            "<span class='track'><span class='fill' style='width:" +
+              Math.max(3, m.prob / maxProb * 100).toFixed(1) + "%'></span></span>" +
+            "<span class='pct'>" + pct + "%</span>" + visits + "</div>";
   });
   if (res.best) {
     var top = res.moves[0];
     if (top && res.best.uci !== top.uci) {
       // 送子檢查改變了決定 —— 這正是它存在的意義，值得標出來
-      html += "<div style='margin-top:6px;color:var(--good)'>實際走：<b>" + res.best.san +
-              "</b>（送子檢查否決了 " + top.san + "）</div>";
+      html += "<div class='veto'>實際走 <b>" + res.best.san +
+              "</b>：送子檢查否決了 " + top.san + "</div>";
     }
   }
+  el.className = "";
   el.innerHTML = html;
 }
 
 function updateMoveList() {
   var el = $id("moves");
+  updateReview();
   if (!state.history.length) {
     el.className = "hint";
     el.textContent = "還沒有著法。";
     return;
   }
   el.className = "";
+  // 從 FEN 載入的盤面可能是黑方先走、也可能不是第 1 回合，編號要從 FEN 讀
+  var fields = state.startFen.split(" ");
+  var offset = fields[1] === "b" ? 1 : 0;
+  var startNum = parseInt(fields[5], 10) || 1;
+  var highlight = currentPly() - 1;   // 高亮「剛走完的那一步」，跟 lichess 一樣
+  var judged = hintsHidden() ? [] : moveJudgements();
   var rows = "";
-  for (var i = 0; i < state.history.length; i += 2) {
-    rows += "<tr><td class='num'>" + (i / 2 + 1) + ".</td>";
+  for (var slot = 0; slot < state.history.length + offset; slot += 2) {
+    rows += "<tr><td class='num'>" + (startNum + slot / 2) + ".</td>";
     for (var j = 0; j < 2; j++) {
-      var h = state.history[i + j];
-      if (!h) { rows += "<td></td>"; continue; }
-      var idx = i + j;
-      var cls = (state.viewPly === idx) ? "ply current" : "ply";
-      rows += "<td><span class='" + cls + "' data-ply='" + idx + "'>" + h.san + "</span>" +
-              " <span class='ev'>" + (h.cp >= 0 ? "+" : "") + (h.cp / 100).toFixed(2) +
-              " · " + (h.elapsed_ms / 1000).toFixed(2) + "s</span></td>";
+      var idx = slot + j - offset;
+      var h = state.history[idx];
+      if (!h) { rows += "<td>" + (idx < 0 ? "…" : "") + "</td>"; continue; }
+      var cls = (idx === highlight) ? "ply current" : "ply";
+      // 無提示模式只留耗時，評分等對局結束才顯示
+      var ev = hintsHidden() ? "" : (h.cp >= 0 ? "+" : "") + (h.cp / 100).toFixed(2) + " · ";
+      var jd = judged[idx] && judged[idx].judge;
+      var mark = jd ? "<span class='judge " + jd.cls + "' title='" + jd.name + "'>" + jd.sym + "</span>" : "";
+      rows += "<td><span class='" + cls + "' data-ply='" + idx + "'>" + h.san + mark + "</span>" +
+              " <span class='ev'>" + ev + (h.elapsed_ms / 1000).toFixed(2) + "s</span></td>";
     }
     rows += "</tr>";
   }
   el.innerHTML = "<table>" + rows + "</table>";
   el.querySelectorAll("span.ply").forEach(function (sp) {
-    sp.addEventListener("click", function () { viewPly(parseInt(sp.dataset.ply, 10)); });
+    // 點某一步 = 看走完那一步之後的盤面
+    sp.addEventListener("click", function () { goToPly(parseInt(sp.dataset.ply, 10) + 1); });
   });
-  el.scrollTop = el.scrollHeight;
+  var cur = el.querySelector("span.ply.current");
+  if (state.viewPly === null || !cur) { el.scrollTop = el.scrollHeight; }
+  else { cur.scrollIntoView({ block: "nearest" }); }
 }
 
 function setStatus(text, isOver) {
@@ -512,39 +1395,59 @@ function setStatus(text, isOver) {
 }
 
 function updateTurnLine() {
-  var ply = state.history.length;
   var who = state.game.turn() === "w" ? "白方" : "黑方";
-  var text = "第 " + (Math.floor(ply / 2) + 1) + " 回合 · 輪到" + who;
-  if (state.mode === "play") { text += (state.game.turn() === state.humanColor ? "（你）" : "（AI）"); }
-  if (state.game.game_over()) { text = "對局結束"; }
+  var text = "第 " + state.game.fen().split(" ")[5] + " 回合 · 輪到" + who;
+  if (isVsMode(state.mode)) { text += (state.game.turn() === state.humanColor ? "（你）" : "（AI）"); }
+  if (isGameOver()) { text = "對局結束"; }
   $id("turn-line").textContent = text;
 }
 
 function renderPosition() {
+  applyHintVisibility();   // 無提示模式在對局結束的那一刻要揭曉
   state.board.position(state.game.fen());   // 有動畫，自動播放時比較好看
   $id("fen-out").value = state.game.fen();
   updateMoveList();
   updateTurnLine();
+  refreshBoardDecor();
 }
 
 // ---------------------------------------------------------------------------
 // 與後端往來
 // ---------------------------------------------------------------------------
 
-async function analyseCurrent() {
-  var res = await api("/api/analyse", {
-    fen: state.game.fen(),
-    top_k: API_TOP_K,
-    temperature: state.temperature
-  });
-  state.current = res;
-  state.source = res.source;
+function showAnalysis(res) {
   drawArrows(res.moves);
   updateEval(res);
   updateCandidates(res);
-  if (res.is_game_over) {
-    setStatus("對局結束：" + res.result + "（" + res.result_reason + "）", true);
-  }
+}
+
+function gameOverText(res) {
+  var text = "對局結束：" + res.result + "（" + res.result_reason + "）";
+  if (state.mode === "blind") { text += " 提示已揭曉，點著法可以覆盤。"; }
+  return text;
+}
+
+// 分析目前盤面。`policyOnly` = 只要 policy 箭頭（人類回合的提示），就算開了 MCTS 也不跑搜尋。
+// 盤面在等回應時已經變了的話回傳 null，呼叫端要處理。
+async function analyseCurrent(policyOnly) {
+  var gen = state.gen;
+  var res = await api("/api/analyse", {
+    // 送「起始盤面 + 整串著法」而不是只送目前的 FEN：FEN 沒有歷史，後端會看不到三次重複
+    fen: state.startFen,
+    moves: state.history.map(function (h) { return h.uci; }),
+    top_k: API_TOP_K,
+    temperature: policyOnly ? 0 : state.temperature,
+    policy_only: !!policyOnly
+  });
+  // 等回應的這段時間裡，玩家可能已經走棋、悔棋或開了新局。
+  // 舊盤面的結果畫到新盤面上會很難除錯，直接丟掉。
+  if (gen !== state.gen) { return null; }
+  res.policyOnly = !!policyOnly;
+  state.current = res;
+  state.source = res.source;
+  if (state.viewPly === null) { showAnalysis(res); }
+  updateMoveList();
+  if (res.is_game_over) { setStatus(gameOverText(res), true); }
   return res;
 }
 
@@ -563,68 +1466,82 @@ function recordHistory(uci, san, analysis) {
     visits: hasVisits
       ? analysis.moves.reduce(function (acc, m) { acc[m.uci] = m.visits; return acc; }, {})
       : null,
-    elapsed_ms: analysis ? analysis.elapsed_ms : 0
+    elapsed_ms: analysis ? analysis.elapsed_ms : 0,
+    // 玩家在提示分析回來前就先走，那一步沒有評分；覆盤時不能把 0 當成真的評分
+    analysed: !!analysis
   });
+  settleClockAfterMove();
+  state.gen++;
   state.viewPly = null;
   state.current = null;
+  state.selected = null;
 }
 
-// AI 走一步。合法性以後端（python-chess）為準，前端的 chess.js 只是為了拖曳時能即時回饋。
-async function applyMove(uci, analysis) {
-  var res = await api("/api/move", { fen: state.game.fen(), uci: uci });
-  if (!res.legal) {
-    // 理論上不會走到這裡。真的發生就以後端為準重新同步，盤面不會進入錯誤狀態。
-    setStatus("後端判定這步不合法（" + res.reason + "），已重新同步盤面。");
-    state.board.position(res.fen, false);
-    return null;
+// 在前端走一步（chess.js）。不再另外問後端 /api/move：
+// 下一次 /api/analyse 會帶整串著法讓 python-chess 重播，不合法就回 400，後端仍然是權威。
+function applyMove(uci, analysis) {
+  var mv = state.game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || "q" });
+  if (!mv) {
+    // chess.js 與 python-chess 對合法性的判斷不一致（理論上不會發生）
+    showBanner("chess.js 認為 AI 的著法 " + uci + " 不合法。請按「新的一局」重新開始。");
+    return false;
   }
-
-  state.game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || "q" });
-  recordHistory(uci, res.san, analysis);
+  recordHistory(uci, mv.san, analysis);
   renderPosition();
-  if (res.is_game_over) {
-    setStatus("對局結束：" + res.result + "（" + res.result_reason + "）", true);
-  }
-  return res;
+  playMoveSound(mv);
+  return true;
 }
 
 // AI 走一步：先分析 → 箭頭停留 dwell 毫秒 → 落子
 async function aiStep(dwellMs) {
   if (state.busy) { return false; }
+  var gen = state.gen;
+  var token = {};
   state.busy = true;
+  state.busyToken = token;
+  updatePlayers();   // 玩家列顯示「思考中…」
   try {
-    var res = state.current || await analyseCurrent();
-    if (res.is_game_over) { return false; }
-    setStatus("AI 思考中…（" + res.best.san + "）");
-    await sleep(dwellMs);
-    await applyMove(res.best.uci, res);
-    return true;
+    setStatus("AI 思考中…");
+    // 人類回合留下來的 policy 提示不能拿來當 AI 的決定（MCTS 模式下兩者不同）
+    var res = (state.current && !state.current.policyOnly) ? state.current : await analyseCurrent(false);
+    if (!res || gen !== state.gen || res.is_game_over) { return false; }
+    if (!hintsHidden()) { setStatus("AI 思考中…（" + res.best.san + "）"); }
+    // 停留時間扣掉已經花掉的思考時間：MCTS 想了 1.5 秒，就不必再多等 0.8 秒
+    await sleep(Math.max(0, dwellMs - res.elapsed_ms));
+    if (gen !== state.gen) { return false; }   // 停留期間按了新局
+    return applyMove(res.best.uci, res);
   } catch (err) {
-    showBanner(err.message);
+    if (gen === state.gen) { showBanner(err.message); }
     return false;
   } finally {
-    state.busy = false;
+    // 新局會直接把 busy 搶走；只有自己還持有時才清，不然會把新局的 aiStep 放行兩次
+    if (state.busyToken === token) {
+      state.busy = false;
+      state.busyToken = null;
+      updatePlayers();
+      document.body.classList.toggle("can-move", canHumanMoveNow());
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// 三種模式
+// 四種模式
 // ---------------------------------------------------------------------------
 
-function isGameOver() { return state.game.game_over(); }
-
+// 對弈 / 無提示對戰：一步棋落地之後決定下一件事
 async function afterMove() {
-  if (state.mode === "analyse") { return; }
-  if (isGameOver()) { await analyseCurrent(); return; }
+  if (!isVsMode(state.mode)) { return; }
+  if (isGameOver()) { await analyseCurrent(true); return; }
 
-  if (state.mode === "play") {
-    if (state.game.turn() === state.humanColor) {
-      await analyseCurrent();          // 順便讓你看到 AI 建議你走哪裡
-      setStatus("輪到你了，拖曳棋子走棋。");
-    } else {
-      await aiStep(ARROW_DWELL_MS);
-      await afterMove();
-    }
+  if (state.game.turn() === state.humanColor) {
+    setStatus("輪到你了，拖曳或點擊棋子走棋。");
+    // 提示只用 policy，幾毫秒就回來。無提示模式也照樣分析（只是不畫），
+    // 人類那幾步在 PGN 裡才有評分，評分曲線不會忽高忽低。
+    await analyseCurrent(true);
+  } else {
+    var dwell = state.mode === "blind" ? BLIND_MIN_THINK_MS : ARROW_DWELL_MS;
+    // aiStep 失敗（網路錯誤、盤面已變）就停下來，不要無限重試
+    if (await aiStep(dwell)) { await afterMove(); }
   }
 }
 
@@ -635,118 +1552,225 @@ async function autoLoop() {
   }
   state.autoRunning = false;
   $id("btn-auto").textContent = "▶ 播放";
-  if (isGameOver()) { await analyseCurrent(); }
+  if (isGameOver()) { await analyseCurrent(true); }
+  // 播放途中切到對弈模式：最後那一步走完之後交棒給對弈流程
+  else if (isVsMode(state.mode)) { await afterMove(); }
 }
 
 function viewPly(ply) {
-  // 回顧第 ply 步：顯示「走那步之前」的盤面，配上當時記下的箭頭
-  var tmp = new Chess();
-  for (var i = 0; i < ply; i++) { tmp.move({ from: state.history[i].uci.slice(0, 2), to: state.history[i].uci.slice(2, 4), promotion: state.history[i].uci.slice(4) || "q" }); }
+  // 回顧「走完前 ply 步」的盤面。箭頭與評分用第 ply 步（也就是下一步）走之前記下的分析，
+  // 那正是網路在這個盤面上的想法。
   state.viewPly = ply;
+  state.selected = null;
+  var tmp = displayedGame();
   state.board.position(tmp.fen(), false);
   $id("fen-out").value = tmp.fen();
 
   var h = state.history[ply];
+  // 無提示模式下 drawArrows / updateEval 自己會什麼都不畫
   drawArrows(h.policy_top.map(function (pair) {
     return { uci: pair[0], prob: pair[1], san: pair[0], visits: null };
   }));
   // 當時記下來的 value_white / cp 已經是白方視角，直接用
   updateEval({ value_white: h.value_white, cp: h.cp });
   updateMoveList();
-  setStatus("正在回顧第 " + (ply + 1) + " 手（" + h.san + "）。按「回到最新」繼續對局。");
+  refreshBoardDecor();
+  setStatus(ply === 0
+    ? "回顧：起始盤面。按 ⏭ 或 End 回到最新。"
+    : "回顧：第 " + ply + " 手 " + state.history[ply - 1].san + " 之後。按 ⏭ 或 End 回到最新。");
+}
+
+// 跳到「走完前 n 步」的盤面；n 超過最後一步就回到最新
+function goToPly(n) {
+  n = Math.max(0, n);
+  if (n >= state.history.length) {
+    if (state.viewPly !== null) { backToLatest(); }
+    return;
+  }
+  viewPly(n);
+}
+
+// 重畫目前盤面的提示（切換模式、回到最新時用）
+function redrawCurrent() {
+  if (state.current) {
+    showAnalysis(state.current);
+  } else {
+    clearArrows();
+    updateEval(null);
+    updateCandidates(null);
+  }
 }
 
 function backToLatest() {
   state.viewPly = null;
   renderPosition();
   if (state.current) {
-    drawArrows(state.current.moves);
-    updateEval(state.current);
+    redrawCurrent();
   } else {
-    analyseCurrent().catch(function (e) { showBanner(e.message); });
+    analyseCurrent(isVsMode(state.mode)).catch(function (e) { showBanner(e.message); });
   }
-  setStatus(isGameOver() ? "對局已結束。" : "");
+  if (isGameOver()) { setStatus("對局已結束。"); }
+  else if (state.busy) { setStatus("AI 思考中…"); }
+  else if (isVsMode(state.mode) && state.game.turn() === state.humanColor) { setStatus("輪到你了，拖曳或點擊棋子走棋。"); }
+  else { setStatus(""); }
 }
 
 // ---------------------------------------------------------------------------
 // 棋盤事件
 // ---------------------------------------------------------------------------
 
+// 現在能不能由人類走棋（拖曳、點擊、游標樣式都看這一個判斷）
+function canHumanMoveNow() {
+  return isVsMode(state.mode) && !state.busy && !state.autoRunning &&
+         state.viewPly === null && !state.pendingPromo && !isGameOver() &&
+         state.game.turn() === state.humanColor;
+}
+
+function selectSquare(square) {
+  state.selected = square;
+  refreshBoardDecor();
+}
+
+function clearSelection() {
+  if (state.selected === null) { return; }
+  state.selected = null;
+  refreshBoardDecor();
+}
+
+// 嘗試走 from → to。不合法回傳 false；升變會先跳出選擇視窗，選完才真的走。
+function tryHumanMove(from, to) {
+  var cands = state.game.moves({ square: from, verbose: true }).filter(function (m) {
+    return m.to === to;
+  });
+  if (!cands.length) { return false; }
+  state.selected = null;
+  if (cands[0].promotion) { openPromotion(from, to); }
+  else { commitHumanMove(from, to, ""); }
+  return true;
+}
+
+// 真的走下去。`promo` 是升變的兵種（"q" / "r" / "b" / "n"），不是升變就是空字串。
+function commitHumanMove(from, to, promo) {
+  // 走這步「之前」的分析（提示箭頭那次）。人類走的那幾步也要有評分，PGN 的曲線才不會忽高忽低。
+  // 分析還沒回來就先走的話這裡是 null，那一步記 0 分 —— 比卡住不讓人走好。
+  var pre = state.current;
+  var mv = state.game.move({ from: from, to: to, promotion: promo || "q" });
+  recordHistory(from + to + promo, mv.san, pre);
+  playMoveSound(mv);
+  // 延到 chessboard.js 處理完這次拖放再重畫，不然會跟它的 snap 動畫打架。
+  // 後端會在下一次 /api/analyse 重播整串著法時再驗一次合法性。
+  setTimeout(function () {
+    renderPosition();
+    afterMove().catch(function (e) { showBanner(e.message); });
+  }, 0);
+}
+
+// chessboard.js 沒有點擊事件，所以「點棋子」其實是「拖起來又在原地放下」：
+// onDragStart 負責選取，onDrop(同一格) 負責保留或取消選取。
 function onDragStart(source, piece) {
-  if (state.mode === "analyse") { return false; }
-  if (state.busy || state.autoRunning) { return false; }
-  if (state.viewPly !== null) { return false; }   // 回顧歷史時不能走棋
-  if (isGameOver()) { return false; }
-  if (state.mode === "auto") { return false; }
-  // 只能動自己顏色的棋子
-  if (piece[0] !== state.game.turn()) { return false; }
-  if (state.mode === "play" && state.game.turn() !== state.humanColor) { return false; }
+  if (!canHumanMoveNow()) { return false; }
+  // 已經選了一顆棋子，現在點的是對方的子 → 當成「吃它」
+  if (piece[0] !== state.game.turn()) {
+    if (state.selected && !tryHumanMove(state.selected, source)) { clearSelection(); }
+    return false;
+  }
+  state.wasSelected = (state.selected === source);
+  selectSquare(source);   // 一拿起來就標出可以走的格子
   return true;
 }
 
 function onDrop(source, target) {
-  // chessboard.js 要求**同步**回答這步能不能放，沒辦法等後端回應，
-  // 所以這裡用 chess.js 立刻判斷（非法就 snapback，棋子彈回去）；
-  // 之後 humanMove 還會再讓後端確認一次（後端才是權威）。
-  var legal = state.game.moves({ verbose: true }).filter(function (m) {
-    return m.from === source && m.to === target;
-  })[0];
-  if (!legal) { return "snapback"; }
-
-  // 升變一律升后。網頁上不做選擇介面，這是 99.9% 的情況。
-  var uci = source + target + (legal.promotion ? "q" : "");
-  var fenBefore = state.game.fen();
-  // 走這步「之前」的分析。人類走的那幾步也要有評分，PGN 的曲線才不會忽高忽低。
-  var pre = state.current;
-  // 先在前端生效，onSnapEnd 才不會把棋子彈回舊位置（等後端回來再閃一下很難看）
-  state.game.move({ from: source, to: target, promotion: "q" });
-  humanMove(uci, fenBefore, pre);
+  if (target === source) {
+    // 原地放開 = 點擊。再點一次同一顆就取消選取。
+    if (state.wasSelected) { clearSelection(); }
+    return "snapback";
+  }
+  var cands = state.game.moves({ square: source, verbose: true }).filter(function (m) {
+    return m.to === target;
+  });
+  if (!cands.length) { clearSelection(); return "snapback"; }
+  state.selected = null;
+  if (cands[0].promotion) {
+    // 升變要等你選兵種；兵先彈回原位，選完再走
+    openPromotion(source, target);
+    return "snapback";
+  }
+  commitHumanMove(source, target, "");
   return true;
 }
 
-async function humanMove(uci, fenBefore, analysis) {
-  state.busy = true;
-  try {
-    var res = await api("/api/move", { fen: fenBefore, uci: uci });
-    if (!res.legal) {
-      // chess.js 與 python-chess 對合法性的判斷不一致（理論上不會發生）。
-      // 以後端為準：把前端剛才那步撤回。
-      state.game.undo();
-      renderPosition();
-      setStatus("後端判定這步不合法（" + res.reason + "），已還原。");
-      return;
-    }
-    recordHistory(uci, res.san, analysis);
-    renderPosition();
-    if (res.is_game_over) {
-      setStatus("對局結束：" + res.result + "（" + res.result_reason + "）", true);
-    }
-  } catch (err) {
-    showBanner(err.message);
-  } finally {
-    state.busy = false;
-  }
-  await afterMove();
+// 點空格（有棋子的格子會被 chessboard.js 當成拖曳處理，走不到這裡）
+function onBoardClick(e) {
+  var el = e.target.closest("[data-square]");
+  if (!el || !state.selected || !canHumanMoveNow()) { return; }
+  var square = el.dataset.square;
+  if (square === state.selected) { return; }
+  if (!tryHumanMove(state.selected, square)) { clearSelection(); }
+}
+
+// --- 升變選擇 ---
+
+function openPromotion(from, to) {
+  state.pendingPromo = { from: from, to: to };
+  var color = state.game.turn();
+  var box = $id("promo-box");
+  box.innerHTML = "";
+  PROMO_PIECES.forEach(function (t) {
+    var btn = document.createElement("button");
+    btn.title = { q: "后", r: "車", b: "象", n: "馬" }[t];
+    var img = document.createElement("img");
+    img.src = pieceThemeUrl().replace("{piece}", color + t.toUpperCase());
+    img.alt = btn.title;
+    btn.appendChild(img);
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var p = state.pendingPromo;
+      closePromotion();
+      if (p) { commitHumanMove(p.from, p.to, t); }
+    });
+    box.appendChild(btn);
+  });
+  $id("promo").hidden = false;
+  refreshBoardDecor();
+}
+
+function closePromotion() {
+  state.pendingPromo = null;
+  $id("promo").hidden = true;
+  refreshBoardDecor();
 }
 
 // ---------------------------------------------------------------------------
 // 介面事件
 // ---------------------------------------------------------------------------
 
-function setMode(mode) {
+// skipFlow = true：呼叫端（開局選單）接著會自己開新局，這裡不要去接舊對局的流程
+function setMode(mode, skipFlow) {
   state.mode = mode;
+  saveSetting("mode", mode);
   state.autoRunning = false;
   $id("btn-auto").textContent = "▶ 播放";
-  document.querySelectorAll("nav button").forEach(function (b) {
-    b.classList.toggle("active", b.dataset.mode === mode);
-  });
+  $id("mode-label").textContent = MODE_NAMES[mode];
   document.querySelectorAll(".mode-only").forEach(function (d) {
-    d.style.display = (d.dataset.for === mode) ? "block" : "none";
+    // data-for 可以列好幾個模式，用空白分隔（例如 "play blind"）
+    d.style.display = (d.dataset.for.split(" ").indexOf(mode) >= 0) ? "block" : "none";
   });
+  // 切進 / 切出無提示模式時，畫面上的提示要跟著收起或揭曉
+  applyHintVisibility();
+  updateMoveList();
+  updateTurnLine();
+  if (state.viewPly !== null) { viewPly(state.viewPly); } else { redrawCurrent(); }
+  state.selected = null;
+  refreshBoardDecor();
+
+  if (skipFlow) { return; }
   if (mode === "analyse") {
     // 直接把目前盤面填進去，最常見的用法是「從這裡開始改」
     if (!$id("fen-input").value.trim()) { $id("fen-input").value = state.game.fen(); }
     setStatus("分析模式：貼上 FEN 後按「載入並分析」。");
+  } else if (isVsMode(mode) && !state.busy && !isGameOver()) {
+    // 從別的模式切過來時可能正輪到 AI，要把對弈流程接上
+    afterMove().catch(function (e) { showBanner(e.message); });
   } else {
     setStatus("");
   }
@@ -754,9 +1778,18 @@ function setMode(mode) {
 
 function newGame(aiFirst) {
   state.game = new Chess();
+  state.startFen = STANDARD_FEN;
   state.history = [];
   state.current = null;
   state.viewPly = null;
+  state.gen++;
+  // 上一局的 aiStep 可能還在等回應：直接把 busy 搶過來，它回來時發現世代變了會自己放棄
+  state.busy = false;
+  state.busyToken = null;
+  state.selected = null;
+  state.flagged = null;
+  if (state.pendingPromo) { closePromotion(); }
+  resetClock();
   state.humanColor = aiFirst ? "b" : "w";
   state.board.orientation(aiFirst ? "black" : "white");
   clearArrows();
@@ -777,11 +1810,18 @@ async function exportPgn() {
         };
       }),
       headers: {
-        Event: state.mode === "auto" ? "web board self-play" : "web board",
+        Event: state.mode === "auto" ? "web board self-play"
+             : (state.mode === "blind" ? "web board (no hints)" : "web board"),
         White: state.mode === "auto" ? "MyNet" : (state.humanColor === "w" ? "Human" : "MyNet"),
         Black: state.mode === "auto" ? "MyNet" : (state.humanColor === "w" ? "MyNet" : "Human")
       }
     });
+    if (state.flagged) {
+      // 後端只看盤面決定 Result，超時它看不出來，這裡直接改 PGN 文字
+      var result = state.flagged === "w" ? "0-1" : "1-0";
+      res.pgn = res.pgn.replace(/\[Result "[^"]*"\]/, '[Result "' + result + '"]\n[Termination "time forfeit"]')
+                       .replace(/\*\s*$/, result + "\n");
+    }
     $id("pgn-card").style.display = "block";
     $id("pgn-out").value = res.pgn;
   } catch (err) {
@@ -803,6 +1843,7 @@ async function refreshHealth() {
       h.model_path.split(/[\\/]/).pop() + " · " + h.device + " · " +
       h.params.toLocaleString() + " 參數 · C" + h.channels + "×" + h.blocks +
       " · 搜尋 " + (h.searcher === "mcts" ? "MCTS " + h.simulations : "policy");
+    $id("menu-model").textContent = $id("health").textContent;
     $id("use-mcts").checked = (h.searcher === "mcts");
     if (h.simulations) { $id("sims").value = h.simulations; }
   } catch (err) {
@@ -811,13 +1852,29 @@ async function refreshHealth() {
 }
 
 function bindUi() {
-  document.querySelectorAll("nav button").forEach(function (b) {
-    b.addEventListener("click", function () { setMode(b.dataset.mode); });
+  // 開局選單
+  $id("btn-menu").addEventListener("click", openMenu);
+  $id("btn-result-menu").addEventListener("click", openMenu);
+  $id("menu-start").addEventListener("click", function () {
+    startFromMenu().catch(function (e) { showBanner(e.message); });
+  });
+  $id("menu-resume").addEventListener("click", closeMenu);
+  document.querySelectorAll("#mode-grid .mode-opt").forEach(function (b) {
+    b.addEventListener("click", function () { state.menu.mode = b.dataset.mode; renderMenu(); });
+    // 雙擊直接開始，熟悉之後不必再按一次「開始」
+    b.addEventListener("dblclick", function () { $id("menu-start").click(); });
+  });
+  document.querySelectorAll("#menu-color button").forEach(function (b) {
+    b.addEventListener("click", function () { state.menu.color = b.dataset.v; renderMenu(); });
+  });
+  document.querySelectorAll("#menu-strength button").forEach(function (b) {
+    b.addEventListener("click", function () { state.menu.strength = b.dataset.v; renderMenu(); });
   });
 
   $id("topk").addEventListener("input", function (e) {
     state.topK = parseInt(e.target.value, 10);
     $id("topk-val").textContent = state.topK;
+    saveSetting("topK", state.topK);
     // 一律跟後端要 8 個，所以改滑桿不用重新請求，直接重畫
     if (state.viewPly !== null) { viewPly(state.viewPly); }
     else if (state.current) { drawArrows(state.current.moves); updateCandidates(state.current); }
@@ -826,24 +1883,37 @@ function bindUi() {
   $id("delay").addEventListener("input", function (e) {
     state.autoDelay = parseInt(e.target.value, 10);
     $id("delay-val").textContent = state.autoDelay + " ms";
+    saveSetting("autoDelay", state.autoDelay);
   });
 
   $id("temp").addEventListener("input", function (e) {
     state.temperature = parseInt(e.target.value, 10) / 100;
     $id("temp-val").textContent = state.temperature.toFixed(2);
+    saveSetting("temperature", state.temperature);
   });
 
   $id("btn-new").addEventListener("click", function () { newGame(false); });
   $id("btn-flip").addEventListener("click", function () { newGame(true); });
 
   $id("btn-undo").addEventListener("click", function () {
-    if (state.busy || state.history.length < 2) { return; }
-    state.game.undo(); state.game.undo();      // 一次退兩步：人與 AI 各一步
-    state.history.splice(state.history.length - 2, 2);
+    if (state.busy || !state.history.length) { return; }
+    if (state.clock) { setStatus("計時對局不能悔棋。"); return; }
+    if (state.flagged) { return; }
+    if (state.pendingPromo) { closePromotion(); }
+    // 退回「上一次輪到你」的盤面：先退一步，如果變成 AI 的回合就再退一步。
+    // 不寫死退兩步：對局若是你走出將死結束的，最後一步是你的，只該退一步。
+    state.game.undo();
+    state.history.pop();
+    if (state.history.length && state.game.turn() !== state.humanColor) {
+      state.game.undo();
+      state.history.pop();
+    }
     state.current = null;
     state.viewPly = null;
+    state.gen++;
     renderPosition();
-    analyseCurrent().catch(function (e) { showBanner(e.message); });
+    setStatus("");
+    afterMove().catch(function (e) { showBanner(e.message); });
   });
 
   $id("btn-auto").addEventListener("click", function () {
@@ -858,7 +1928,7 @@ function bindUi() {
   });
   $id("btn-step").addEventListener("click", function () {
     if (state.autoRunning) { return; }
-    aiStep(0).then(function () { return analyseCurrent(); }).catch(function (e) { showBanner(e.message); });
+    aiStep(0).then(function () { return analyseCurrent(false); }).catch(function (e) { showBanner(e.message); });
   });
   $id("btn-auto-reset").addEventListener("click", function () {
     state.autoRunning = false;
@@ -872,17 +1942,22 @@ function bindUi() {
     var test = new Chess();
     if (!test.load(fen)) { showBanner("chess.js 認為這個 FEN 不合法：" + fen); return; }
     state.game = test;
+    state.startFen = test.fen();
+    state.clock = null;       // 從 FEN 載入的盤面不計時
+    state.flagged = null;
     state.history = [];
     state.viewPly = null;
     state.current = null;
+    state.gen++;
     renderPosition();
-    analyseCurrent().catch(function (e) { showBanner(e.message); });
+    analyseCurrent(false).catch(function (e) { showBanner(e.message); });
   });
   $id("btn-start-fen").addEventListener("click", function () {
     $id("fen-input").value = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   });
 
   $id("btn-apply-search").addEventListener("click", async function () {
+    if (state.busy) { setStatus("AI 思考中，等它走完再套用。"); return; }
     try {
       await api("/api/config", {
         mcts: $id("use-mcts").checked,
@@ -890,12 +1965,78 @@ function bindUi() {
       });
       await refreshHealth();
       state.current = null;
-      if (!isGameOver() && state.mode !== "analyse") { await analyseCurrent(); }
-      else if (state.mode === "analyse") { await analyseCurrent(); }
+      if (isVsMode(state.mode)) { await afterMove(); }
+      else { await analyseCurrent(false); }
     } catch (err) { showBanner(err.message); }
   });
 
-  $id("btn-latest").addEventListener("click", backToLatest);
+  // 回顧導覽：按鈕與鍵盤
+  $id("nav-first").addEventListener("click", function () { goToPly(0); });
+  $id("nav-prev").addEventListener("click", function () { goToPly(currentPly() - 1); });
+  $id("nav-next").addEventListener("click", function () { goToPly(currentPly() + 1); });
+  $id("nav-last").addEventListener("click", function () { goToPly(state.history.length); });
+  document.addEventListener("keydown", function (e) {
+    if (!$id("menu").hidden) {
+      if (e.key === "Enter" && !(e.target.closest && e.target.closest("textarea"))) {
+        e.preventDefault();
+        $id("menu-start").click();
+      } else if (e.key === "Escape" && !$id("menu-resume").hidden) {
+        closeMenu();
+      }
+      return;
+    }
+    // 正在打 FEN 時不要攔方向鍵（target 可能是 document 本身，它沒有 closest）
+    if (e.target.closest && e.target.closest("input, textarea")) { return; }
+    if (e.key === "Escape") {
+      if (state.pendingPromo) { closePromotion(); } else { clearSelection(); }
+      return;
+    }
+    var jump = { ArrowLeft: -1, ArrowRight: +1 }[e.key];
+    if (jump) { e.preventDefault(); goToPly(currentPly() + jump); }
+    else if (e.key === "Home") { e.preventDefault(); goToPly(0); }
+    else if (e.key === "End") { e.preventDefault(); goToPly(state.history.length); }
+  });
+
+  $id("board").addEventListener("click", onBoardClick);
+  // 點升變視窗外面 = 取消，兵留在原位
+  $id("promo").addEventListener("click", function (e) {
+    if (e.target === $id("promo")) { closePromotion(); }
+  });
+
+  $id("banner-close").addEventListener("click", hideBanner);
+
+  document.querySelectorAll("#tabs button").forEach(function (b) {
+    b.addEventListener("click", function () { setTab(b.dataset.tab); expandSheet(true); });
+  });
+  $id("sheet-handle").addEventListener("click", function () {
+    expandSheet(!$id("panel").classList.contains("expanded"));
+  });
+  $id("graph").addEventListener("click", onGraphClick);
+
+  $id("set-theme").addEventListener("change", function (e) { saveSetting("theme", e.target.value); applyAppearance(); });
+  $id("set-board").addEventListener("change", function (e) { saveSetting("board", e.target.value); applyAppearance(); });
+  $id("set-pieces").addEventListener("change", function (e) { saveSetting("pieces", e.target.value); createBoard(); });
+  $id("set-sound").addEventListener("change", function (e) { saveSetting("sound", e.target.checked); });
+  $id("btn-test-sound").addEventListener("click", function () { playSound("move", true); });
+  $id("set-clock").addEventListener("change", function (e) {
+    saveSetting("clock", e.target.value);
+    setStatus("棋鐘設定會從下一局開始生效。");
+  });
+
+  $id("btn-result-new").addEventListener("click", function () {
+    if (state.mode === "auto") { $id("btn-auto-reset").click(); }
+    else { newGame(state.humanColor === "b"); }   // 維持你原本執的顏色
+  });
+  $id("btn-result-review").addEventListener("click", function () {
+    state.resultDismissedGen = state.gen;
+    updateResultOverlay();
+    setTab("review");
+    expandSheet(true);
+  });
+  $id("btn-result-close").addEventListener("click", function () {
+    state.resultDismissedGen = state.gen;
+    updateResultOverlay();
+  });
   $id("btn-pgn").addEventListener("click", exportPgn);
   $id("btn-copy-fen").addEventListener("click", function () {
     copyText($id("fen-out").value, "已複製");
@@ -921,7 +2062,479 @@ function bindUi() {
     if (state.viewPly !== null) { viewPly(state.viewPly); }
     else if (state.current) { drawArrows(state.current.moves); }
     $id("eval-bar").style.height = $id("board").offsetHeight + "px";
+    refreshBoardDecor();
   });
+}
+
+// ---------------------------------------------------------------------------
+// 設定、分頁、外觀
+// ---------------------------------------------------------------------------
+
+// chessboard.js 預設的動畫偏慢，AI 落子時看起來拖泥帶水；稍微加快（毫秒）
+var BOARD_ANIM = { moveSpeed: 160, snapbackSpeed: 120, snapSpeed: 50, appearSpeed: 120, trashSpeed: 100 };
+var TABS = ["game", "review", "settings"];
+
+// 讀設定。localStorage 可能被擋（無痕模式、隱私設定），讀不到就用預設值，頁面照常運作。
+function loadSettings() {
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  return Object.assign({}, DEFAULT_SETTINGS, saved);
+}
+
+function saveSetting(key, value) {
+  if (!state.settings) { return; }
+  state.settings[key] = value;
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings)); } catch (e) { /* 存不了就只在這次有效 */ }
+}
+
+// 把設定值填回各個控制項（啟動時做一次）
+function applySettingsToControls() {
+  var s = state.settings;
+  var sel = $id("set-pieces");
+  Object.keys(PIECE_SETS).forEach(function (key) {
+    var opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = PIECE_SETS[key].name;
+    sel.appendChild(opt);
+  });
+  if (!PIECE_SETS[s.pieces]) { s.pieces = DEFAULT_SETTINGS.pieces; }
+  if (!(s.clock in CLOCKS)) { s.clock = DEFAULT_SETTINGS.clock; }
+
+  $id("set-theme").value = s.theme;
+  $id("set-board").value = s.board;
+  $id("set-pieces").value = s.pieces;
+  $id("set-sound").checked = !!s.sound;
+  $id("set-clock").value = s.clock;
+
+  state.topK = s.topK;
+  $id("topk").value = s.topK;
+  $id("topk-val").textContent = s.topK;
+  state.temperature = s.temperature;
+  $id("temp").value = Math.round(s.temperature * 100);
+  $id("temp-val").textContent = s.temperature.toFixed(2);
+  state.autoDelay = s.autoDelay;
+  $id("delay").value = s.autoDelay;
+  $id("delay-val").textContent = s.autoDelay + " ms";
+}
+
+// 介面主題掛在 <html data-theme>（沒有這個屬性 = 跟隨系統），棋盤配色掛在 <body data-board>
+function applyAppearance() {
+  var root = document.documentElement;
+  if (state.settings.theme === "system") { root.removeAttribute("data-theme"); }
+  else { root.setAttribute("data-theme", state.settings.theme); }
+  document.body.setAttribute("data-board", state.settings.board);
+}
+
+function pieceThemeUrl() {
+  return (PIECE_SETS[state.settings.pieces] || PIECE_SETS[DEFAULT_SETTINGS.pieces]).url;
+}
+
+// 建立（或重建）棋盤。chessboard.js 的棋子圖片只能在建立時指定，換棋子樣式就得整個重建。
+function createBoard() {
+  var rebuilding = !!state.board;
+  var orientation = rebuilding ? state.board.orientation()
+                               : (state.humanColor === "b" ? "black" : "white");
+  if (rebuilding) { state.board.destroy(); }
+  state.board = Chessboard("board", Object.assign({
+    position: rebuilding ? displayedGame().fen() : "start",
+    orientation: orientation,
+    draggable: true,
+    pieceTheme: pieceThemeUrl(),
+    onDragStart: onDragStart,
+    onDrop: onDrop,
+    onSnapEnd: function () { state.board.position(state.game.fen(), false); }
+  }, BOARD_ANIM));
+  if (rebuilding) {
+    // 格子 DOM 全換了：評估條高度、格子標記、箭頭都要重上
+    $id("eval-bar").style.height = $id("board").offsetHeight + "px";
+    if (state.viewPly !== null) { viewPly(state.viewPly); }
+    else { redrawCurrent(); refreshBoardDecor(); }
+  }
+}
+
+function setTab(tab) {
+  if (TABS.indexOf(tab) < 0) { tab = TABS[0]; }
+  saveSetting("tab", tab);
+  document.querySelectorAll("#tabs button").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.tab === tab);
+  });
+  document.querySelectorAll(".tab-page").forEach(function (page) {
+    page.classList.toggle("active", page.dataset.page === tab);
+  });
+  // 評分曲線的寬度要在頁面顯示出來之後才量得到
+  if (tab === "review") { updateReview(); }
+}
+
+// 手機的底部抽屜：展開 / 收合（桌面版這個 class 沒有任何樣式，等於沒作用）
+function expandSheet(open) { $id("panel").classList.toggle("expanded", open); }
+
+// ---------------------------------------------------------------------------
+// 覆盤：失誤判定、評分曲線、對局總結
+// ---------------------------------------------------------------------------
+
+var GRAPH_H = 130;       // 評分曲線的高度（viewBox 單位）
+var GRAPH_PAD = 8;       // 上下留白，±1 的點才不會貼著邊
+
+// 第 k 步是誰走的（從 FEN 載入的盤面可能是黑方先走）
+function moverColor(k) {
+  var first = state.startFen.split(" ")[1];
+  return (k % 2 === 0) ? first : (first === "w" ? "b" : "w");
+}
+
+// 走完前 n 步之後的盤面評分（白方視角的 value）。沒有資料回傳 null。
+// history[n] 記的是「走第 n 步之前」的分析 = 走完前 n 步的盤面；最新盤面則看 state.current。
+function positionValueWhite(n) {
+  if (n < state.history.length) {
+    var h = state.history[n];
+    return h.analysed ? h.value_white : null;
+  }
+  return state.current ? state.current.value_white : null;
+}
+
+// 每一步的評價：{ k, color, drop, acc, judge }，缺資料的那步是 null。
+//   drop：走棋方勝率掉了多少（0 ~ 1）
+//   acc ：單步準確度（lichess 的公式，勝率掉越多分數越低）
+function moveJudgements() {
+  return state.history.map(function (h, k) {
+    var before = positionValueWhite(k), after = positionValueWhite(k + 1);
+    if (before === null || after === null) { return null; }
+    var color = moverColor(k);
+    // 視角轉換：value_white 是白方視角，黑方走的那步要取負號才是「走棋方」的視角
+    var sign = color === "w" ? 1 : -1;
+    // 勝率 = (value + 1) / 2，所以勝率差 = value 差 / 2
+    var drop = Math.max(0, (sign * before - sign * after) / 2);
+    var acc = 103.1668 * Math.exp(-0.04354 * drop * 100) - 3.1669;
+    var judge = null;
+    for (var i = 0; i < JUDGES.length; i++) {
+      if (drop >= JUDGES[i].min) { judge = JUDGES[i]; break; }
+    }
+    return { k: k, color: color, drop: drop, acc: Math.max(0, Math.min(100, acc)), judge: judge };
+  });
+}
+
+// 著法編號，例如 "12." 或 "12…"（黑方）
+function moveNumberLabel(k) {
+  var fields = state.startFen.split(" ");
+  var offset = fields[1] === "b" ? 1 : 0;
+  var num = (parseInt(fields[5], 10) || 1) + Math.floor((k + offset) / 2);
+  return num + (moverColor(k) === "w" ? "." : "…");
+}
+
+// 第 k 步走之前，模型的首選著法（SAN）
+function suggestedSan(k) {
+  var top = state.history[k].policy_top[0];
+  if (!top) { return null; }
+  var u = top[0];
+  var mv = gameAtPly(k).move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u.slice(4) || "q" });
+  return mv ? mv.san : null;
+}
+
+function svgEl(tag, attrs) {
+  var el = document.createElementNS(SVG_NS, tag);
+  Object.keys(attrs).forEach(function (key) { el.setAttribute(key, attrs[key]); });
+  return el;
+}
+
+function updateReview() {
+  var graph = $id("graph"), summary = $id("summary"), hint = $id("graph-hint");
+  while (graph.firstChild) { graph.removeChild(graph.firstChild); }
+  summary.className = "hint";
+  hint.textContent = "";
+  if (!state.history.length) { summary.textContent = "還沒有著法。"; return; }
+  if (hintsHidden()) { summary.textContent = "無提示模式：對局結束後揭曉。"; return; }
+
+  var judged = moveJudgements();
+  drawGraph(graph, judged);
+  hint.textContent = "每一點是走完那一手之後的評分。" +
+    "?! 不精確、? 失誤、?? 大失誤 = 走棋方勝率掉了 10 / 20 / 30 個百分點以上。";
+  renderSummary(summary, judged);
+}
+
+function drawGraph(svg, judged) {
+  // viewBox 寬度跟實際寬度一致，圓點才不會被拉成橢圓（分頁沒顯示時量不到，先用 400）
+  var width = svg.clientWidth || 400;
+  svg.setAttribute("viewBox", "0 0 " + width + " " + GRAPH_H);
+  var n = state.history.length, mid = GRAPH_H / 2;
+  var x = function (i) { return (i / n * width).toFixed(1); };
+  var y = function (v) { return (mid - v * (mid - GRAPH_PAD)).toFixed(1); };
+
+  var pts = [], last = 0;
+  for (var i = 0; i <= n; i++) {
+    var v = positionValueWhite(i);
+    if (v === null) { v = last; }     // 缺資料就延用前一點，曲線不會斷掉
+    last = v;
+    pts.push([x(i), y(v)]);
+  }
+  var line = pts.map(function (p, i) { return (i ? "L" : "M") + p[0] + "," + p[1]; }).join(" ");
+  svg.appendChild(svgEl("path", { "class": "area", d: line + " L" + width + "," + mid + " L0," + mid + " Z" }));
+  svg.appendChild(svgEl("line", { "class": "zero", x1: 0, y1: mid, x2: width, y2: mid }));
+  svg.appendChild(svgEl("path", { "class": "curve", d: line }));
+  var cx = x(currentPly());
+  svg.appendChild(svgEl("line", { "class": "cursor", x1: cx, y1: 0, x2: cx, y2: GRAPH_H }));
+
+  judged.forEach(function (j) {
+    if (!j || !j.judge) { return; }
+    var dot = svgEl("circle", { "class": j.judge.cls, cx: pts[j.k + 1][0], cy: pts[j.k + 1][1], r: 4 });
+    var title = svgEl("title", {});
+    title.textContent = moveNumberLabel(j.k) + " " + state.history[j.k].san + j.judge.sym + "（" + j.judge.name + "）";
+    dot.appendChild(title);
+    svg.appendChild(dot);
+  });
+}
+
+function onGraphClick(e) {
+  var n = state.history.length;
+  if (!n || hintsHidden()) { return; }
+  var rect = $id("graph").getBoundingClientRect();
+  var frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  goToPly(Math.round(frac * n));
+}
+
+function renderSummary(el, judged) {
+  el.className = "";
+  var rows = ["w", "b"].map(function (color) {
+    var mine = judged.filter(function (j) { return j && j.color === color; });
+    var acc = mine.length ? mine.reduce(function (a, j) { return a + j.acc; }, 0) / mine.length : null;
+    var count = function (cls) { return mine.filter(function (j) { return j.judge && j.judge.cls === cls; }).length; };
+    return "<tr><td>" + playerLabel(color) + "</td>" +
+      "<td class='acc'>" + (acc === null ? "—" : Math.round(acc) + "%") + "</td>" +
+      "<td class='judge inaccuracy'>" + count("inaccuracy") + "</td>" +
+      "<td class='judge mistake'>" + count("mistake") + "</td>" +
+      "<td class='judge blunder'>" + count("blunder") + "</td></tr>";
+  });
+  var html = "<table><tr><th></th><th>準確度</th><th>?! 不精確</th><th>? 失誤</th><th>?? 大失誤</th></tr>" +
+             rows.join("") + "</table>";
+
+  var worst = judged.filter(function (j) { return j && j.judge; })
+                    .sort(function (a, b) { return b.drop - a.drop; })
+                    .slice(0, WORST_SHOWN);
+  if (worst.length) {
+    html += "<div class='worst'>" + worst.map(function (j) {
+      var h = state.history[j.k];
+      var best = suggestedSan(j.k);
+      var advice = (best && best !== h.san) ? "模型當時首選：<b>" + best + "</b>" : "這步本來就是模型的首選";
+      return "<button data-ply='" + j.k + "'><b>" + moveNumberLabel(j.k) + " " + h.san + j.judge.sym + "</b>" +
+             " · " + playerLabel(j.color) + " · 勝率 −" + Math.round(j.drop * 100) + "%" +
+             "<div class='sub'>" + advice + "。點一下回到走這步之前的盤面。</div></button>";
+    }).join("") + "</div>";
+  } else {
+    html += "<div class='hint' style='margin-top:8px'>沒有明顯的失誤。</div>";
+  }
+  html += "<div class='hint' style='margin-top:8px'>評分來自模型自己的 value head（MCTS 模式是根節點的 Q），" +
+          "不是 Stockfish；準確度用 lichess 的換算公式。</div>";
+  el.innerHTML = html;
+  el.querySelectorAll(".worst button").forEach(function (b) {
+    b.addEventListener("click", function () { goToPly(parseInt(b.dataset.ply, 10)); expandSheet(false); });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 音效（用 Web Audio 現場合成，不必多載音檔；static/ 規定只能有 index.html 一個檔）
+// ---------------------------------------------------------------------------
+
+// 每個音效是幾個短音：f 頻率 Hz、at 延遲秒、dur 長度秒、wave 波形、vol 音量
+var SOUNDS = {
+  move:    [{ f: 520, at: 0,    dur: 0.07, wave: "triangle", vol: 0.30 }],
+  capture: [{ f: 300, at: 0,    dur: 0.09, wave: "square",   vol: 0.10 },
+            { f: 150, at: 0.02, dur: 0.12, wave: "triangle", vol: 0.35 }],
+  check:   [{ f: 660, at: 0,    dur: 0.09, wave: "sine",     vol: 0.25 },
+            { f: 880, at: 0.10, dur: 0.14, wave: "sine",     vol: 0.25 }],
+  end:     [{ f: 523, at: 0,    dur: 0.16, wave: "sine",     vol: 0.25 },
+            { f: 659, at: 0.16, dur: 0.16, wave: "sine",     vol: 0.25 },
+            { f: 784, at: 0.32, dur: 0.32, wave: "sine",     vol: 0.25 }],
+  lowtime: [{ f: 440, at: 0,    dur: 0.06, wave: "square",   vol: 0.08 },
+            { f: 440, at: 0.12, dur: 0.06, wave: "square",   vol: 0.08 }]
+};
+var audioCtx = null;
+
+// force = 不管設定都播（「試聽」按鈕用）
+function playSound(kind, force) {
+  if (!force && !(state.settings && state.settings.sound)) { return; }
+  try {
+    // 瀏覽器規定要有使用者操作過才能出聲；在那之前 AI 先走的聲音會被吞掉，沒關係
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") { audioCtx.resume(); }
+    var t0 = audioCtx.currentTime;
+    SOUNDS[kind].forEach(function (tone) {
+      var osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      osc.type = tone.wave;
+      osc.frequency.value = tone.f;
+      var start = t0 + tone.at, end = start + tone.dur;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(tone.vol, start + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.0001, end);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(end + 0.02);
+    });
+  } catch (e) { /* 不支援 Web Audio 就不出聲，不是必要功能 */ }
+}
+
+// 依剛走的那步挑音效。`mv` 是 chess.js move() 的回傳值。
+function playMoveSound(mv) {
+  if (isGameOver()) { playSound("end"); }
+  else if (state.game.in_check()) { playSound("check"); }
+  else if (mv.captured) { playSound("capture"); }
+  else { playSound("move"); }
+}
+
+// ---------------------------------------------------------------------------
+// 棋鐘
+// ---------------------------------------------------------------------------
+
+// 新局時依設定建立棋鐘。只有對弈模式計時；第一步不計時（跟 lichess 一樣，按下新局不會馬上開始扣）。
+function resetClock() {
+  var tc = CLOCKS[state.settings.clock];
+  state.lowTimeWarned = false;
+  if (!tc || !isVsMode(state.mode)) { state.clock = null; return; }
+  state.clock = {
+    w: tc[0] * 1000, b: tc[0] * 1000, inc: tc[1] * 1000,
+    side: state.game.turn(), last: performance.now()
+  };
+}
+
+function clockRunning() {
+  return !!state.clock && isVsMode(state.mode) && !isGameOver() && state.history.length > 0;
+}
+
+// 每 CLOCK_TICK_MS 呼叫一次：扣掉正在走的那一方的時間
+function tickClock() {
+  var c = state.clock;
+  if (!c) { return; }
+  var now = performance.now();
+  if (clockRunning()) {
+    c[c.side] -= now - c.last;
+    if (c.side === state.humanColor && !state.lowTimeWarned && c[c.side] < LOW_TIME_MS) {
+      state.lowTimeWarned = true;
+      playSound("lowtime");
+    }
+    if (c[c.side] <= 0) {
+      c[c.side] = 0;
+      c.last = now;
+      flagFall(c.side);
+      return;
+    }
+  }
+  // 暫停時（切到別的模式、對局結束）也要更新 last，恢復時才不會一次扣掉整段暫停的時間
+  c.last = now;
+  renderClocks();
+}
+
+// 一步棋落地之後（recordHistory 呼叫）：結算走棋方的時間、加秒、換邊
+function settleClockAfterMove() {
+  var c = state.clock;
+  if (!c) { return; }
+  var now = performance.now();
+  // 第一步不扣時間也不加秒
+  if (isVsMode(state.mode) && state.history.length > 1) {
+    c[c.side] = Math.max(0, c[c.side] - (now - c.last)) + c.inc;
+  }
+  c.side = state.game.turn();
+  c.last = now;
+}
+
+// 時間用完：判負，並讓還在等回應的 AI 分析作廢
+function flagFall(color) {
+  state.flagged = color;
+  state.gen++;
+  state.selected = null;
+  if (state.pendingPromo) { closePromotion(); }
+  renderPosition();      // 無提示模式會在這裡揭曉，結果面板也會跳出來
+  redrawCurrent();
+  playSound("end");
+  setStatus("對局結束：" + (color === "w" ? "白方" : "黑方") + "超時。", true);
+}
+
+function formatClock(ms) {
+  if (ms < LOW_TIME_MS) { return (Math.max(0, ms) / 1000).toFixed(1); }
+  var sec = Math.ceil(ms / 1000);
+  return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
+
+function renderClocks() {
+  if (!state.clock) { return; }
+  var running = clockRunning();
+  document.querySelectorAll(".player .clock").forEach(function (el) {
+    var color = el.dataset.color, ms = state.clock[color];
+    el.textContent = formatClock(ms);
+    el.classList.toggle("running", running && state.clock.side === color);
+    el.classList.toggle("low", ms < LOW_TIME_MS);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 開局選單
+// ---------------------------------------------------------------------------
+
+// 打開選單。選項預設是上次開局時的選擇。
+function openMenu() {
+  var st = state.settings;
+  state.menu = { mode: st.mode, color: st.color, strength: st.strength };
+  $id("menu-clock").value = st.clock;
+  // 自動播放開著的話先停下來，不然選單後面還在一直下
+  if (state.autoRunning) { $id("btn-auto").click(); }
+  // 只有對局進行到一半才能「繼續」；剛打開頁面或已經下完就只能開新局
+  $id("menu-resume").hidden = !(state.history.length > 0 && !isGameOver());
+  renderMenu();
+  $id("menu").hidden = false;
+  $id("menu-start").focus();
+}
+
+function closeMenu() { $id("menu").hidden = true; }
+
+function renderMenu() {
+  var m = state.menu;
+  document.querySelectorAll("#mode-grid .mode-opt").forEach(function (b) {
+    b.classList.toggle("selected", b.dataset.mode === m.mode);
+  });
+  document.querySelectorAll("#menu-color button").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.v === m.color);
+  });
+  document.querySelectorAll("#menu-strength button").forEach(function (b) {
+    b.classList.toggle("active", b.dataset.v === m.strength);
+  });
+  document.querySelectorAll("#menu .menu-opts").forEach(function (d) {
+    d.classList.toggle("show", d.dataset.for.split(" ").indexOf(m.mode) >= 0);
+  });
+  $id("menu-strength-hint").textContent = (STRENGTHS[m.strength] || STRENGTHS.fast).hint;
+}
+
+// 把「AI 強度」套到後端的搜尋方式
+async function applyStrength(key) {
+  var st = STRENGTHS[key] || STRENGTHS.fast;
+  var body = { mcts: st.mcts };
+  if (st.sims) { body.simulations = st.sims; }
+  await api("/api/config", body);
+  await refreshHealth();
+}
+
+// 按下「開始」：記住選擇、套用強度、切模式、開新局
+async function startFromMenu() {
+  var m = state.menu;
+  var clock = $id("menu-clock").value;
+  saveSetting("color", m.color);
+  saveSetting("strength", m.strength);
+  saveSetting("clock", clock);
+  $id("set-clock").value = clock;
+  closeMenu();
+
+  if (m.mode !== "analyse") {
+    setStatus("套用 AI 強度中…");
+    await applyStrength(m.strength);
+  }
+  setMode(m.mode, true);
+
+  if (isVsMode(m.mode)) {
+    var color = m.color === "random" ? (Math.random() < 0.5 ? "w" : "b") : m.color;
+    newGame(color === "b");
+    setTab("game");
+  } else if (m.mode === "auto") {
+    newGame(false);
+    $id("btn-auto").click();          // 直接開始播放
+  } else {
+    $id("fen-input").value = $id("menu-fen").value.trim() || STANDARD_FEN;
+    $id("btn-load-fen").click();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,33 +2551,41 @@ function boot() {
   }
 
   state.game = new Chess();
-  state.board = Chessboard("board", {
-    position: "start",
-    draggable: true,
-    pieceTheme: PIECE_THEME,
-    onDragStart: onDragStart,
-    onDrop: onDrop,
-    onSnapEnd: function () { state.board.position(state.game.fen(), false); }
-  });
+  state.settings = loadSettings();
+  applySettingsToControls();
+  applyAppearance();
+  createBoard();
+  setTab(state.settings.tab);
 
   bindUi();
 
   // 網址可以直接指定模式，例如 /?mode=auto&autostart=1
   // 展示的時候很方便：開一個分頁就自己開始自我對弈，不用點任何按鈕。
   var params = new URLSearchParams(location.search);
-  var wanted = params.get("mode");
-  setMode(["play", "auto", "analyse"].indexOf(wanted) >= 0 ? wanted : "play");
+  $id("menu-clock").innerHTML = $id("set-clock").innerHTML;   // 棋鐘選項只寫一份
+  // 網址有指定模式（例如 /?mode=auto&autostart=1）就直接進去；否則先開選單讓人挑
+  var urlMode = params.get("mode");
+  var direct = MODES.indexOf(urlMode) >= 0;
+  if (direct) {
+    setMode(urlMode);
+  } else {
+    setMode(MODES.indexOf(state.settings.mode) >= 0 ? state.settings.mode : "play", true);
+    openMenu();
+  }
+  resetClock();
+  refreshBoardDecor();
+  setInterval(tickClock, CLOCK_TICK_MS);
 
   renderPosition();
   $id("eval-bar").style.height = $id("board").offsetHeight + "px";
 
   refreshHealth().then(function () {
-    return analyseCurrent();
+    // 選單開著：等按下「開始」再分析。對弈模式的第一次分析 setMode 已經透過 afterMove 送出了
+    if (!direct || isVsMode(state.mode)) { return null; }
+    return analyseCurrent(false);
   }).then(function () {
     if (state.mode === "auto" && params.get("autostart") === "1") {
       $id("btn-auto").click();
-    } else if (state.mode === "play") {
-      setStatus("輪到你了，拖曳棋子走棋。");
     }
   }).catch(function (e) { showBanner(e.message); });
 }
