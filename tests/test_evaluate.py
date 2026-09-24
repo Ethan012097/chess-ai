@@ -10,7 +10,11 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from types import SimpleNamespace
 
+import chess
+import chess.engine
 import pytest
 
 from src.evaluate import (
@@ -20,7 +24,12 @@ from src.evaluate import (
     elo_difference,
     format_elo,
     parse_cutechess_result,
+    print_absolute_elo,
     report_terminations,
+    MAX_ENGINE_RESTARTS,
+    mcnemar_exact_p,
+    StockfishMover,
+    stockfish_opponents,
     wilson_interval,
 )
 
@@ -243,3 +252,209 @@ def test_report_does_nothing_without_data(capsys) -> None:
     """沒有結束原因資料時完全不印，不要輸出空的區塊。"""
     report_terminations({})
     assert capsys.readouterr().out == ""
+
+
+# --- UCI_Elo 標尺 -----------------------------------------------------------
+#
+# Skill Level 不是校準過的 Elo 刻度（它靠隨機挑著法變弱），
+# UCI_LimitStrength + UCI_Elo 才是。這幾條守住兩者不會被搞混。
+
+
+def test_skill_level_opponents_have_no_known_elo() -> None:
+    """Skill Level 沒有校準過的 Elo 對應值，第三個欄位必須是 None。
+
+    填一個猜的數字進去，絕對 Elo 推估就會憑空多出假的精確度。
+    """
+    opponents = stockfish_opponents([0, 3], None)
+    assert [o[0] for o in opponents] == ["Skill Level 0", "Skill Level 3"]
+    assert all(o[2] is None for o in opponents)
+    # LimitStrength 要明確關掉，否則引擎預設開著會蓋掉 Skill Level
+    assert all(o[1]["UCI_LimitStrength"] is False for o in opponents)
+
+
+def test_uci_elo_opponents_carry_their_anchor() -> None:
+    """UCI_Elo 對手要記住自己值多少 Elo，那是絕對推估的基準。"""
+    opponents = stockfish_opponents(None, [1400, 1800])
+    assert [o[2] for o in opponents] == [1400, 1800]
+    for label, options, elo in opponents:
+        assert options["UCI_LimitStrength"] is True
+        assert options["UCI_Elo"] == elo
+        # LimitStrength 要排在 Elo 前面送出去
+        assert list(options) == ["UCI_LimitStrength", "UCI_Elo"]
+
+
+def test_both_kinds_can_coexist() -> None:
+    """兩種可以同時組出來（雖然 CLI 預設不混用）。"""
+    opponents = stockfish_opponents([0], [1500])
+    assert len(opponents) == 2
+    assert opponents[0][2] is None and opponents[1][2] == 1500
+
+
+def test_empty_input_gives_empty_list() -> None:
+    assert stockfish_opponents(None, None) == []
+    assert stockfish_opponents([], []) == []
+
+
+def test_absolute_elo_shifts_by_anchor(capsys) -> None:
+    """我方 Elo = 對手 Elo + Elo差。得分率 50 % 時就等於對手的 Elo。"""
+    reports = [
+        {"opponent_elo": 1600, "score": 0.5, "elo_diff": 0.0,
+         "elo_ci_low": -50.0, "elo_ci_high": 50.0},
+    ]
+    print_absolute_elo(reports)
+    out = capsys.readouterr().out
+    assert "1600" in out
+    assert "[1550, 1650]" in out, "信賴區間要跟著平移到絕對刻度上"
+
+
+def test_absolute_elo_flags_inconsistent_estimates(capsys) -> None:
+    """幾個估計值差很多時要講出來，不要假裝可以平均成一個數字。"""
+    reports = [
+        {"opponent_elo": 1400, "score": 0.9, "elo_diff": 382.0,
+         "elo_ci_low": 300.0, "elo_ci_high": 470.0},
+        {"opponent_elo": 2000, "score": 0.1, "elo_diff": -382.0,
+         "elo_ci_low": -470.0, "elo_ci_high": -300.0},
+    ]
+    print_absolute_elo(reports)
+    out = capsys.readouterr().out
+    assert "1782" in out and "1618" in out
+    assert "差距偏大" in out
+
+
+def test_absolute_elo_ignores_unanchored_reports(capsys) -> None:
+    """只有 Skill Level 的結果不能拿來推絕對 Elo，整段要跳過。"""
+    print_absolute_elo([{"opponent_elo": None, "score": 0.65, "elo_diff": 108.0,
+                         "elo_ci_low": -20.0, "elo_ci_high": 235.0}])
+    assert capsys.readouterr().out == ""
+
+
+# --- 引擎卡住的容錯 ---------------------------------------------------------
+#
+# 實測跑 450 局的評估時，Stockfish 有一步卡了四分多鐘不回應，
+# python-chess 丟出 TimeoutError，整批測量就這樣沒了。
+# 一次 hiccup 不該讓幾十分鐘的結果歸零。
+
+
+def _mover_with(total_failures: int, exc: type[Exception] = TimeoutError):
+    """建一個 StockfishMover，但把開引擎換成假的。
+
+    `total_failures` 是**跨引擎累計**的失敗次數：重開之後仍然算在同一個額度裡。
+    這樣 total_failures 很大時就能模擬「怎麼重開都救不回來」。
+    """
+    remaining = {"n": total_failures}
+    engines: list[SimpleNamespace] = []
+
+    def make_engine():
+        state = SimpleNamespace(quit_calls=0)
+
+        def play(board, limit):  # noqa: ANN001
+            if remaining["n"] > 0:
+                remaining["n"] -= 1
+                raise exc("模擬引擎卡住")
+            return SimpleNamespace(move=next(iter(board.legal_moves)))
+
+        def quit_():
+            state.quit_calls += 1
+
+        state.play = play
+        state.quit = quit_
+        engines.append(state)
+        return state
+
+    mover = StockfishMover.__new__(StockfishMover)
+    mover.engine_path = Path("fake/stockfish.exe")
+    mover.options = {}
+    mover.limit = None
+    mover.restarts = 0
+    mover._open = lambda: make_engine()
+    mover.engine = mover._open()
+    return mover, engines
+
+
+def test_mover_returns_move_when_engine_is_healthy() -> None:
+    """正常情況不該有任何重開。"""
+    mover, _ = _mover_with(total_failures=0)
+    assert mover.play(chess.Board()) in chess.Board().legal_moves
+    assert mover.restarts == 0
+
+
+def test_mover_restarts_after_timeout() -> None:
+    """引擎卡住要重開再試，而不是讓整批評估掛掉。"""
+    mover, engines = _mover_with(total_failures=1)
+    move = mover.play(chess.Board())
+    assert move in chess.Board().legal_moves
+    assert mover.restarts == 1
+    assert len(engines) == 2, "應該開了第二個引擎行程"
+    assert engines[0].quit_calls == 1, "舊的引擎要被收掉，不能留殭屍行程"
+
+
+def test_mover_gives_up_with_actionable_message() -> None:
+    """一直失敗就要放棄，但錯誤訊息要說明下一步做什麼。"""
+    mover, _ = _mover_with(total_failures=99)
+    with pytest.raises(RuntimeError) as exc:
+        mover.play(chess.Board())
+    text = str(exc.value)
+    assert "engine_movetime_ms" in text, "要告訴使用者可以調哪個設定"
+    assert "rnbqkbnr" in text, "要附上出問題的盤面，才能重現"
+    assert mover.restarts == MAX_ENGINE_RESTARTS
+
+
+def test_mover_also_handles_engine_terminated() -> None:
+    """引擎行程直接死掉也要能救回來，不是只處理 timeout。"""
+    mover, _ = _mover_with(total_failures=1, exc=chess.engine.EngineTerminatedError)
+    assert mover.play(chess.Board()) in chess.Board().legal_moves
+    assert mover.restarts == 1
+
+
+# --- McNemar 配對檢定 -------------------------------------------------------
+#
+# 為什麼需要它：兩個搜尋器跑的是同一批題目，那是配對資料。
+# 用獨立樣本的標準誤（每桶 100 題 → 約 ±5 %）會嚴重高估雜訊，
+# 把真的顯著的退步判成「落在雜訊範圍內」。
+
+
+def test_mcnemar_perfect_agreement_is_not_significant() -> None:
+    """完全沒有不一致對時 p = 1，不能因為樣本大就宣稱有差異。"""
+    assert mcnemar_exact_p(0, 0) == 1.0
+
+
+def test_mcnemar_symmetric_counts_give_p_one() -> None:
+    """b = c 代表兩邊互有勝負且完全平衡，p 應該是 1。"""
+    for n in (1, 5, 20):
+        assert mcnemar_exact_p(n, n) == pytest.approx(1.0)
+
+
+def test_mcnemar_matches_known_values() -> None:
+    """對照手算的精確二項檢定值。"""
+    # b=10, c=0 → p = 2 * C(10,0)/2^10 = 2/1024
+    assert mcnemar_exact_p(10, 0) == pytest.approx(2 / 1024)
+    # b=6, c=1 → p = 2 * (C(7,0)+C(7,1))/2^7 = 2*8/128
+    assert mcnemar_exact_p(6, 1) == pytest.approx(2 * 8 / 128)
+    # b=1, c=0 → p = 2 * 1/2 = 1.0（一對不一致什麼都證明不了）
+    assert mcnemar_exact_p(1, 0) == pytest.approx(1.0)
+
+
+def test_mcnemar_is_symmetric_in_arguments() -> None:
+    """雙尾檢定，交換 b 與 c 結果相同。"""
+    for b, c in [(3, 9), (0, 7), (12, 4)]:
+        assert mcnemar_exact_p(b, c) == pytest.approx(mcnemar_exact_p(c, b))
+
+
+def test_mcnemar_never_exceeds_one() -> None:
+    """雙尾機率乘 2 之後可能超過 1，必須夾住。"""
+    for b in range(0, 8):
+        for c in range(0, 8):
+            assert 0.0 <= mcnemar_exact_p(b, c) <= 1.0
+
+
+def test_mcnemar_is_more_sensitive_than_independent_samples() -> None:
+    """這條說明為什麼要換方法。
+
+    情境：每桶 100 題，A 89 % 、B 82 %（README §6.7 的 <1000 桶）。
+    獨立樣本的標準誤約 5 %，7 個百分點的差距會被判成雜訊。
+    但如果那 7 個百分點全部來自不一致對（b=7, c=0），配對檢定會說它顯著。
+    """
+    p = mcnemar_exact_p(7, 0)
+    assert p < 0.05, "b=7, c=0 應該是顯著的，獨立樣本檢定會漏掉"
+    # 而如果兩邊互有勝負（b=11, c=4），同樣的淨差距就不顯著了
+    assert mcnemar_exact_p(11, 4) > 0.05

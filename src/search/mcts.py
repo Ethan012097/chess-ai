@@ -36,13 +36,18 @@ import torch
 from src.config import PROJECT_ROOT, Config, add_common_args, load_config
 from src.encoding import encode_board, legal_indices
 from src.model import ChessNet, resolve_device
-from src.search import Searcher
+from src.search import Searcher, find_mate_in_one
 
 # 終局的 value（從「輪到走棋方」的視角）：被將死就是 -1，和局是 0
 TERMINAL_LOSS = -1.0
 TERMINAL_DRAW = 0.0
 # virtual loss 每次記一個單位的「假裝輸了」
 VIRTUAL_LOSS = 1.0
+
+# First Play Urgency：未訪問子節點的預設值 = 父節點的 Q 減去這個懲罰。
+# 0.25 是 Leela 那類引擎的常見量級；太大會變成幾乎不探索新著法，
+# 太小就退回原本「劣勢局面搜尋攤平」的毛病。
+FPU_REDUCTION = 0.25
 # 時間管理：保留這麼多毫秒的安全餘裕，避免超時被判負
 TIME_SAFETY_MARGIN_MS = 100
 # 每幾次模擬檢查一次時間
@@ -82,14 +87,18 @@ class Node:
     def q(self) -> float:
         """平均價值 Q = W / N，**從本節點走棋方的視角**。
 
-        還沒被造訪過的節點回傳 0（樂觀初始化，讓它有機會被選到）。
+        還沒被造訪過的節點回傳 0。**選擇階段不要直接用這個 0** —— 那是
+        「沒有資訊」而不是「評估為和局」，在劣勢局面會被誤認為出路。
+        `puct_score()` 對未訪問節點改用 FPU，理由見那裡的說明。
         """
         if self.visit_count == 0:
             return 0.0
         return self.value_sum / self.visit_count
 
 
-def puct_score(parent_visits: int, child: Node, c_puct: float) -> float:
+def puct_score(
+    parent_visits: int, child: Node, c_puct: float, parent_q: float = 0.0
+) -> float:
     """算子節點的 PUCT 分數（越高越優先探索）。
 
         PUCT(a) = Q(a) + c_puct * P(a) * sqrt(ΣN) / (1 + N(a))
@@ -97,15 +106,37 @@ def puct_score(parent_visits: int, child: Node, c_puct: float) -> float:
     **視角**：`child.q()` 是從**子節點走棋方**（對手）的視角，
     父節點要的是自己的視角，所以取負號。這是 MCTS 最常見的錯誤來源。
 
+    --------------------------------------------------------------------
+    未訪問節點要用 FPU，不能用 0（這裡踩過一個很難看的坑）
+    --------------------------------------------------------------------
+
+    第一版對沒走過的子節點直接用 Q = 0。在均勢局面沒問題，但**在劣勢局面會整個壞掉**：
+
+        已探索的子節點： -Q(父視角) ≈ -0.9   （局面本來就危險）
+        未探索的子節點： -Q = 0              ← 看起來比所有探索過的都好
+
+    於是每個沒走過的著法都比所有走過的更有吸引力，搜尋一路往外攤平、從不深入。
+    實測一個 policy 有 93 % 把握的正解，拿到的訪問次數跟 prior 0.16 % 的著法**完全一樣**
+    （28 個合法著法裡 12 個各 32 次、15 個 0 次），prior 等於被忽略。
+
+    正確做法是 **First Play Urgency**：沒走過的子節點用「父節點目前的評估」
+    當預設值，再減一點懲罰。這樣劣勢時未探索的著法不會被誤認為出路。
+
     Args:
         parent_visits: 父節點的造訪次數 ΣN。
         child: 子節點。
         c_puct: 探索係數，越大越傾向探索沒走過的著法。
+        parent_q: 父節點自己的 Q（**父節點視角**）。未訪問子節點的預設值由它決定。
 
     Returns:
         PUCT 分數（父節點視角）。
     """
-    exploit = -child.q()          # ← 取負號，換成父節點的視角
+    if child.visit_count == 0:
+        # 父視角的預設估計。減 FPU_REDUCTION 是為了讓「已經驗證過不錯的著法」
+        # 仍然優先於「純粹沒試過的著法」，否則會退化成廣度優先。
+        exploit = parent_q - FPU_REDUCTION
+    else:
+        exploit = -child.q()      # ← 取負號，換成父節點的視角
     explore = c_puct * child.prior * math.sqrt(parent_visits) / (1 + child.visit_count)
     return exploit + explore
 
@@ -249,7 +280,9 @@ class MCTSSearcher(Searcher):
         while node.is_expanded:
             best_index, best_child, best_score = -1, None, -float("inf")
             for index, child in node.children.items():
-                score = puct_score(max(node.visit_count, 1), child, self.c_puct)
+                score = puct_score(
+                    max(node.visit_count, 1), child, self.c_puct, node.q()
+                )
                 if score > best_score:
                     best_index, best_child, best_score = index, child, score
             if best_child is None:
@@ -273,18 +306,33 @@ class MCTSSearcher(Searcher):
         """沿路徑加上 virtual loss。
 
         目的是讓同一批的其他路徑不要全部擠到同一條線上：先假裝這條路輸了，
-        它的 Q 會下降，PUCT 分數跟著下降（規格 §6.4）。
+        PUCT 分數就會下降，下一次選擇會走別條（規格 §6.4）。
+
+        **符號很容易寫反，這裡曾經反過。** `value_sum` 的約定是
+        「**該節點走棋方**的視角」，而父節點是用 `-child.q()` 來評估它。
+        所以要讓這個子節點對父節點沒吸引力，得讓 `child.q()` **變大**：
+
+            value_sum += VIRTUAL_LOSS   →  -child.q() 下降  →  不會再被選
+
+        寫成 `-=` 的話效果完全相反：剛選過的路徑會變成 PUCT 分數最高的那條，
+        整批 32 個葉節點會全部擠到同一個子節點上。實測症狀是根節點的訪問次數
+        變成「12 個著法各剛好 32 次、15 個 0 次」（32 正是 batch size），
+        prior 與 Q 全被忽略。
         """
-        for node in path:
+        # **跳過根節點**（path[0]）。virtual loss 的用途是「不要再選同一個子節點」，
+        # 根節點本來就是每次的起點，加了只會有害：FPU 用的 parent_q 就是
+        # `node.q()`，根節點的 Q 被 virtual loss 灌水之後，未訪問子節點的預設值
+        # 會跟著虛高，搜尋又會退回攤平。
+        for node in path[1:]:
             node.visit_count += 1
-            node.value_sum -= VIRTUAL_LOSS
+            node.value_sum += VIRTUAL_LOSS
 
     @staticmethod
     def _revert_virtual_loss(path: list[Node]) -> None:
         """把 virtual loss 扣回來（真正回溯之前一定要做）。"""
-        for node in path:
+        for node in path[1:]:      # 跟 _apply_virtual_loss 一樣跳過根節點
             node.visit_count -= 1
-            node.value_sum += VIRTUAL_LOSS
+            node.value_sum -= VIRTUAL_LOSS
 
     @staticmethod
     def _backup(path: list[Node], value: float) -> None:
@@ -449,6 +497,13 @@ class MCTSSearcher(Searcher):
         # 要不要判和是 GUI 的事。搞錯這點會讓引擎在對打中無故棄權。
         if not any(board.legal_moves):
             raise ValueError(f"盤面已結束（{board.result()}），沒有著法可選")
+
+        # 一步將死檢查：有立即將死就直接走，不必搜尋。
+        # 跟 GreedySearcher 用同一支函式，兩者在這種局面的選擇才會一致
+        # （否則同一個「有兩個將死」的局面，兩邊會挑到不同的那一個）。
+        mate = find_mate_in_one(board)
+        if mate is not None:
+            return mate
 
         probs = self.move_probabilities(board)
         if not probs:

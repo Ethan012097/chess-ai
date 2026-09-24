@@ -44,3 +44,26 @@ class Searcher:
 
 
 __all__ = ["Searcher"]
+
+
+def find_mate_in_one(board: chess.Board) -> chess.Move | None:
+    """掃過所有合法著法，找有沒有立即將死的。
+
+    放在這裡讓 `GreedySearcher` 與 `MCTSSearcher` 共用同一份實作。
+    共用不只是為了少寫程式：**兩邊必須挑到同一個著法**。
+    有些局面存在兩個一步殺，各自實作的話會挑到不同的那一個，
+    對照測驗時看起來就像其中一邊「答錯」，其實兩邊都將死了。
+
+    Args:
+        board: 盤面（函式不會留下修改）。
+
+    Returns:
+        將死的著法；沒有就回傳 None。
+    """
+    for move in board.legal_moves:
+        board.push(move)
+        is_mate = board.is_checkmate()
+        board.pop()
+        if is_mate:
+            return move
+    return None

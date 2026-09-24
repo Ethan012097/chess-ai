@@ -1,5 +1,9 @@
 # PyTorch 請「不要」用這個檔案安裝，要照 README 用官方 CUDA index 安裝：
-#   pip install torch --index-url https://download.pytorch.org/whl/cu126
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#
+# CUDA 版號要配合顯示卡架構：RTX 50 系列（Blackwell，運算能力 sm_120）最低需要 cu128，
+# 裝成 cu126 會在第一次把張量丟上 GPU 時報 "no kernel image is available"。
+# RTX 40 系列以前的卡用 cu126 仍然可以。
 # 用 requirements.txt 裝到的會是 CPU 版 wheel，torch.cuda.is_available() 會是 False。
 
 python-chess==1.999

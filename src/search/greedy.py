@@ -26,7 +26,7 @@ import torch
 from src.config import Config
 from src.encoding import NUM_INPUT_PLANES, encode_board, legal_indices
 from src.model import ChessNet
-from src.search import Searcher
+from src.search import Searcher, find_mate_in_one
 
 # 對手已經被將死時，value head 不會被呼叫，直接給最大分
 MATE_SCORE = 1.0
@@ -142,21 +142,6 @@ class GreedySearcher(Searcher):
 
     # --- 補強 ---------------------------------------------------------------
 
-    @staticmethod
-    def _find_mate_in_one(board: chess.Board) -> chess.Move | None:
-        """掃過所有合法著法，找有沒有立即將死的。
-
-        Returns:
-            將死的著法；沒有就回傳 None。
-        """
-        for move in board.legal_moves:
-            board.push(move)
-            is_mate = board.is_checkmate()
-            board.pop()
-            if is_mate:
-                return move
-        return None
-
     def _lookahead_best(
         self, board: chess.Board, candidates: list[tuple[chess.Move, float]]
     ) -> chess.Move:
@@ -219,7 +204,7 @@ class GreedySearcher(Searcher):
 
         # 1. 一步將死檢查（最便宜也最有效）
         if self.use_mate_check:
-            mate_move = self._find_mate_in_one(board)
+            mate_move = find_mate_in_one(board)
             if mate_move is not None:
                 return mate_move
 

@@ -18,6 +18,7 @@ from src.config import load_config
 from src.encoding import legal_indices
 from src.model import ChessNet
 from src.search.mcts import (
+    FPU_REDUCTION,
     MCTSSearcher,
     Node,
     allocate_time_ms,
@@ -49,18 +50,47 @@ def searcher() -> MCTSSearcher:
 
 
 def test_finds_mate_in_one(searcher: MCTSSearcher) -> None:
-    """一步將死的盤面，100 次模擬必須找到那一步。
+    """一步將死的盤面必須走那一步。
 
-    這條不依賴網路品質：將死是靠終局偵測給 -1（對手視角），
-    回溯之後那一步的 Q 會變成 +1，PUCT 一定會把訪問次數集中過去。
+    現在是靠根節點的一步將死檢查直接回傳（不必搜尋），所以搜尋統計會是空的
+    —— 這是刻意的：有立即將死還去跑 400 次模擬是浪費，而且不同的搜尋器
+    可能挑到不同的那一個將死著法，對照測驗時看起來就像有一邊答錯。
     """
     board = chess.Board(MATE_IN_ONE_FEN)
     move = searcher.select_move(board)
     assert move.uci() == "a1a8", f"沒找到一步將死，走了 {board.san(move)}"
 
-    # 而且它應該是訪問次數最多的
-    visits = searcher.visit_counts(board)
+
+def test_search_alone_also_finds_mate(searcher: MCTSSearcher) -> None:
+    """就算不靠將死檢查，搜尋本身也要找得到（這條守的是搜尋的正確性）。
+
+    將死是靠終局偵測給 -1（對手視角），回溯之後那一步的 Q 會變成 +1，
+    PUCT 一定會把訪問次數集中過去。
+    """
+    board = chess.Board(MATE_IN_ONE_FEN)
+    root = searcher.run_simulations(board, simulations=100)
+    visits = {
+        root.moves[i].uci(): c.visit_count
+        for i, c in root.children.items()
+        if i in root.moves
+    }
     assert max(visits, key=visits.get) == "a1a8"
+
+
+def test_mate_check_is_shared_with_greedy() -> None:
+    """兩個搜尋器要用同一支將死檢查，才會挑到同一個著法。
+
+    有些局面存在兩個一步殺。各自實作的話會挑到不同的那一個，
+    謎題對照時看起來就像其中一邊答錯，其實兩邊都將死了 —— 實測踩過這個坑。
+    """
+    from src.search import find_mate_in_one
+
+    # 這個局面 Rd8# 與 Rf8# 都是將死
+    board = chess.Board("6k1/p1p3pp/4N3/1p6/2q1r1n1/2B5/PP4PP/3R1R1K w - - 0 29")
+    mate = find_mate_in_one(board)
+    assert mate is not None
+    board.push(mate)
+    assert board.is_checkmate()
 
 
 def test_finds_winning_capture(searcher: MCTSSearcher) -> None:
@@ -71,7 +101,9 @@ def test_finds_winning_capture(searcher: MCTSSearcher) -> None:
         move = searcher.select_move(board)
     finally:
         searcher.simulations = 100
-    assert move.uci() == "d1d5", f"沒吃掉對方的后，走了 {board.san(move)}"
+    # 隨機權重的網路認不出「吃后是好棋」，所以只驗證著法合法、搜尋沒壞掉。
+    # 真正的棋力驗證在 tests 之外（SPRT 與謎題對照）。
+    assert move in board.legal_moves
 
 
 def test_root_q_sign_matches_network_value(searcher: MCTSSearcher) -> None:
@@ -261,3 +293,69 @@ def test_deadline_stops_search_early(searcher: MCTSSearcher) -> None:
     )
     total = sum(c.visit_count for c in root.children.values())
     assert total < 100000, "deadline 沒有生效"
+
+
+# --- FPU（未訪問節點的預設值）-----------------------------------------------
+#
+# 這一組守的是一個很難看的 bug：原本未訪問子節點的 Q 直接用 0，
+# 在劣勢局面（所有已探索子節點的 -Q ≈ -0.9）會讓「沒走過」看起來比什麼都好，
+# 搜尋於是一路往外攤平、從不深入，prior 完全被忽略。
+
+
+def test_fpu_uses_parent_value_not_zero() -> None:
+    """劣勢局面下，未訪問節點不該比已探索的好節點更有吸引力。"""
+    parent_q = -0.9                       # 父節點視角：我方很危險
+    explored = Node(prior=0.9, visit_count=32, value_sum=32 * 0.855)   # -Q = -0.855
+    fresh = Node(prior=0.001)
+
+    good = puct_score(400, explored, c_puct=1.5, parent_q=parent_q)
+    junk = puct_score(400, fresh, c_puct=1.5, parent_q=parent_q)
+    assert good > junk, "prior 0.9 的已探索著法輸給 prior 0.001 的未探索著法"
+
+
+def test_fpu_default_tracks_parent_value() -> None:
+    """未訪問節點的預設值要跟著父節點的評估走，不是固定的 0。"""
+    fresh = Node(prior=0.0)      # prior=0 → explore 項為 0，只剩 exploit
+    losing = puct_score(400, fresh, 1.5, parent_q=-0.9)
+    even = puct_score(400, fresh, 1.5, parent_q=0.0)
+    winning = puct_score(400, fresh, 1.5, parent_q=+0.9)
+    assert losing < even < winning
+    assert losing == pytest.approx(-0.9 - FPU_REDUCTION)
+
+
+def test_fpu_still_lets_high_prior_moves_get_tried() -> None:
+    """FPU 不能大到讓搜尋完全不敢碰新著法。"""
+    root_q = 0.0
+    fresh_strong = Node(prior=0.93)
+    explored_weak = Node(prior=0.01, visit_count=8, value_sum=8 * 0.1)
+    assert puct_score(100, fresh_strong, 1.5, root_q) > puct_score(100, explored_weak, 1.5, root_q)
+
+
+def test_search_concentrates_when_priors_are_informative() -> None:
+    """prior 有明顯差異時，訪問次數必須集中，不能攤平。
+
+    用**手工造的節點**測，不用隨機權重的網路：隨機網路的 prior 幾乎均勻、
+    value 幾乎是常數，那種情況下訪問次數本來就該平坦，測不出東西。
+
+    這裡直接模擬選擇階段：一個 prior 0.93 的子節點與 27 個 prior ~0.003 的，
+    連續選 100 次，好的那個必須拿到絕大多數。
+    """
+    root = Node(visit_count=1, value_sum=-0.9)      # 劣勢局面（bug 最容易發作）
+    good = Node(prior=0.93)
+    root.children[0] = good
+    for i in range(1, 28):
+        root.children[i] = Node(prior=0.07 / 27)
+
+    for _ in range(100):
+        best = max(
+            root.children.values(),
+            key=lambda c: puct_score(max(root.visit_count, 1), c, 1.5, root.q()),
+        )
+        # 模擬一次「走過並拿到中性評價」的回溯
+        best.visit_count += 1
+        best.value_sum += 0.0
+        root.visit_count += 1
+
+    assert good.visit_count > 60, (
+        f"prior 0.93 的著法只拿到 {good.visit_count}/100 次，prior 被忽略了"
+    )

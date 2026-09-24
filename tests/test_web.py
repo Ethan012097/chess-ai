@@ -156,6 +156,51 @@ def test_analyse_rejects_bad_fen(client: TestClient) -> None:
     assert "FEN" in res.json()["detail"]
 
 
+def test_analyse_replays_move_list(client: TestClient) -> None:
+    """給「起始 FEN + 著法串」要等同於直接給走完之後的 FEN。"""
+    board = chess.Board()
+    for san in ("e4", "e5", "Nf3"):
+        board.push_san(san)
+    by_moves = client.post(
+        "/api/analyse", json={"fen": chess.STARTING_FEN, "moves": ["e2e4", "e7e5", "g1f3"]}
+    ).json()
+    by_fen = client.post("/api/analyse", json={"fen": board.fen()}).json()
+    assert by_moves["value"] == pytest.approx(by_fen["value"], abs=1e-4)
+    assert [m["uci"] for m in by_moves["moves"]] == [m["uci"] for m in by_fen["moves"]]
+
+
+def test_analyse_detects_threefold_repetition_from_move_list(client: TestClient) -> None:
+    """只給 FEN 看不到三次重複；給著法串時後端要判定和局（前端的 chess.js 也會這樣判）。"""
+    shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"] * 2
+    res = client.post("/api/analyse", json={"fen": chess.STARTING_FEN, "moves": shuffle}).json()
+    assert res["is_game_over"] is True
+    assert res["result"] == "1/2-1/2"
+    assert res["result_reason"] == "重複盤面"
+
+
+def test_analyse_rejects_illegal_move_list(client: TestClient) -> None:
+    """著法串裡有非法的一步要回 400 並指出是第幾步 —— 前端不再問 /api/move，這裡就是權威。"""
+    res = client.post("/api/analyse", json={"fen": chess.STARTING_FEN, "moves": ["e2e4", "e2e4"]})
+    assert res.status_code == 400
+    assert "第 2 步" in res.json()["detail"]
+
+
+def test_policy_only_skips_mcts(client: TestClient) -> None:
+    """MCTS 模式下 policy_only 要回 policy 機率（人類回合的提示箭頭用），不跑搜尋。"""
+    try:
+        client.post("/api/config", json={"mcts": True, "simulations": 24})
+        res = client.post(
+            "/api/analyse", json={"fen": chess.STARTING_FEN, "policy_only": True}
+        ).json()
+        assert res["source"] == "policy"
+        assert all(m["visits"] is None for m in res["moves"])
+        # 不帶旗標時仍然是 MCTS
+        res = client.post("/api/analyse", json={"fen": chess.STARTING_FEN}).json()
+        assert res["source"] == "mcts"
+    finally:
+        client.post("/api/config", json={"mcts": False})
+
+
 def test_analyse_best_move_is_legal(client: TestClient) -> None:
     """`best` 是 AI 真的會走的那一步（含將死檢查與送子檢查），必須合法。"""
     board = chess.Board(WHITE_WINNING_FEN)

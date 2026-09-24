@@ -62,6 +62,17 @@ from src.search.mcts import MCTSSearcher
 # 自我對弈的資料放這裡，一個 iteration 一個檔
 SELFPLAY_DIR = "data/selfplay"
 LOG_FILE_NAME = "selfplay_log.csv"
+# 持續訓練的候選模型（跟 best.pt 分開的理由見 load_training_model）
+CANDIDATE_FILE_NAME = "selfplay_candidate.pt"
+
+# --- 煙霧測試專用的輸出 ---
+# **煙霧測試的每一個輸出都要跟正式的分開。** 只隔離 buffer 目錄是不夠的：
+# 實測跑一次 --smoke-test，一個只練了 50 步的模型就蓋掉了正式的
+# selfplay_candidate.pt（下一代會把它當成持續訓練的起點載進去），
+# 而且 4 局的統計被寫進正式的 selfplay_log.csv，畫出來的曲線多一個假的點。
+# 兩件事都不會報錯，所以一定要在路徑層面隔離，不能靠「記得別亂跑」。
+SMOKE_LOG_FILE_NAME = "selfplay_log_smoke.csv"
+SMOKE_CANDIDATE_FILE_NAME = "selfplay_candidate_smoke.pt"
 
 # 每步的模擬次數。比正式對局的 800 少，換取資料量（規格 §7.3）。
 DEFAULT_SIMULATIONS = 400
@@ -75,6 +86,11 @@ RESIGN_CONSECUTIVE = 10
 RESIGN_AUDIT_RATIO = 0.1
 # 超過這個步數就判和，避免罕見的無限拉鋸吃掉整個 iteration
 MAX_GAME_PLIES = 400
+# 每下這麼多局就把目前累積的資料落地一次。
+# **不做這件事的代價很實際**：自我對弈一代要好幾小時，中途被中斷
+#（關機、睡眠、session 結束）就什麼都不留。實測連續兩次中斷，
+# 各損失數十局的計算，replay buffer 完全是空的。
+SAVE_EVERY_GAMES = 25
 
 # replay buffer 保留最近幾個 iteration（滑動視窗，避免被早期的爛資料拖住）
 BUFFER_ITERATIONS = 20
@@ -286,6 +302,7 @@ def generate_games(
     num_games: int,
     simulations: int,
     seed: int,
+    on_progress=None,
 ) -> tuple[list[tuple], dict[str, float]]:
     """自我對弈 N 局，回傳所有樣本與統計。
 
@@ -296,6 +313,8 @@ def generate_games(
         num_games: 要下幾局。
         simulations: 每步的模擬次數。
         seed: 亂數種子。
+        on_progress: 每 SAVE_EVERY_GAMES 局呼叫一次 `on_progress(rows)`，
+            用來把中途結果落地。中斷時才不會整代白跑。
 
     Returns:
         (rows, stats)。rows 可直接寫成 SELFPLAY_DTYPE 陣列。
@@ -339,6 +358,9 @@ def generate_games(
             {"盤面": f"{len(rows):,}", "平均步數": f"{np.mean(plies):.0f}",
              "和局": f"{draws / (i + 1) * 100:.0f}%"}
         )
+        # 定期落地。中斷的話至少留下已經算完的部分。
+        if on_progress is not None and (i + 1) % SAVE_EVERY_GAMES == 0:
+            on_progress(rows)
     bar.close()
 
     stats = {
@@ -619,20 +641,26 @@ def run_iteration(
     started = time.perf_counter()
     buffer_dir = cfg.resolve_path(args.buffer_dir)
     best_path = PROJECT_ROOT / "models" / "best.pt"
-    candidate_path = PROJECT_ROOT / "models" / "selfplay_candidate.pt"
+    candidate_path = PROJECT_ROOT / "models" / args.candidate_name
 
     print(f"\n{'=' * 62}\niteration {iteration}\n{'=' * 62}")
 
     # 1. 產生對局 —— 一律用 best.pt（已經通過把關的那個），不是正在訓練的那個
     generator, _ = ChessNet.from_checkpoint(best_path, device=device)
     generator.eval()
+    shard = buffer_dir / f"iter_{iteration:04d}.npy"
+
+    def flush(partial: list[tuple]) -> None:
+        """把中途結果寫進 shard（同一個檔，覆寫）。"""
+        save_shard(partial, shard)
+
     rows, stats = generate_games(
-        generator, device, cfg, args.games, args.simulations, cfg.seed + iteration
+        generator, device, cfg, args.games, args.simulations,
+        cfg.seed + iteration, on_progress=flush,
     )
     print_health(stats)
 
     # 2. 寫入 replay buffer
-    shard = buffer_dir / f"iter_{iteration:04d}.npy"
     save_shard(rows, shard)
     removed = prune_buffer(buffer_dir)
     print(f"  已寫入 {shard}（{len(rows):,} 筆）")
@@ -642,7 +670,7 @@ def run_iteration(
     row = {"iteration": iteration, **stats, "seconds": round(time.perf_counter() - started, 1)}
 
     if args.no_train:
-        append_log(PROJECT_ROOT / "logs" / LOG_FILE_NAME, row)
+        append_log(PROJECT_ROOT / "logs" / args.log_name, row)
         return row
 
     # 3. 訓練 —— 在「持續訓練的那個模型」上繼續，不是每代從 best.pt 重來
@@ -657,13 +685,21 @@ def run_iteration(
         steps=args.train_steps, batch_size=args.batch_size,
         seed=cfg.seed + iteration,
     )
+    # **checkpoint 裡記的架構必須跟權重一致。**
+    # 這裡曾經直接寫 `cfg.to_dict()`，但 cfg 來自 config.yaml 的預設 preset，
+    # 跟「實際載進來的那個模型」可能是不同大小的網路：
+    # best.pt 是 small(C96)、config.yaml 預設 base(C128)，存下去之後
+    # 下一代 `from_checkpoint` 會照 C128 建模型再去載 C96 的權重，
+    # 直接 size mismatch 掛掉（實測第 2 代就爆了）。
+    # 正確做法是沿用「載進來那個 checkpoint 的 config」。
+    saved_config = ckpt.get("config") or cfg.to_dict()
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": iteration,
             "global_step": ckpt.get("global_step", 0) + args.train_steps,
-            "config": cfg.to_dict(),
+            "config": saved_config,
             "source": "selfplay",
         },
         candidate_path,
@@ -674,7 +710,7 @@ def run_iteration(
 
     # 4. 把關：SPRT 對打舊版，通過才更新 best.pt
     if args.keep_best:
-        print("  （--keep-best：候選留在 selfplay_candidate.pt，不動 best.pt）")
+        print(f"  （--keep-best：候選留在 {candidate_path.name}，不動 best.pt）")
         row.update(accepted=False, sprt_result="skipped")
     elif args.no_gate:
         print("  [警告] --no-gate：沒有經過 SPRT 就直接覆蓋 best.pt。")
@@ -685,7 +721,7 @@ def run_iteration(
         row.update(_run_gate(cfg, candidate_path, best_path, args.gate_rounds))
 
     row["seconds"] = round(time.perf_counter() - started, 1)
-    append_log(PROJECT_ROOT / "logs" / LOG_FILE_NAME, row)
+    append_log(PROJECT_ROOT / "logs" / args.log_name, row)
     return row
 
 
@@ -720,6 +756,29 @@ def _run_gate(cfg: Config, candidate: Path, best: Path, rounds: int) -> dict:
     return {"accepted": accepted, "elo": round(elo, 1), "sprt_result": conclusion}
 
 
+def apply_smoke_test_overrides(args: argparse.Namespace) -> None:
+    """把參數改成煙霧測試的設定（原地修改 args）。
+
+    抽成函式是為了**能被測試守著**。這裡漏掉任何一個輸出都不會報錯，
+    只會安靜地污染正式資料 —— 實測跑一次煙霧測試就蓋掉了正式的候選模型、
+    也在正式的統計 csv 多寫了一行 4 局的假資料。
+
+    要隔離的輸出一共三個：replay buffer 目錄、候選模型、統計 csv。
+    """
+    args.games, args.train_steps, args.simulations = 4, 50, 100
+    args.batch_size = min(args.batch_size, 64)
+    args.buffer_dir = SELFPLAY_DIR + "_smoke"
+    args.candidate_name = SMOKE_CANDIDATE_FILE_NAME
+    args.log_name = SMOKE_LOG_FILE_NAME
+    args.keep_best = True
+    args.from_best = True          # 煙霧測試不要接續正式的候選模型
+    print(
+        "[smoke-test] 4 局、100 模擬、50 步訓練、跳過 SPRT、不動 best.pt\n"
+        f"           輸出全部隔離：{args.buffer_dir}、"
+        f"models/{args.candidate_name}、logs/{args.log_name}"
+    )
+
+
 def main() -> None:
     """`python -m src.selfplay --help` 看全部參數。"""
     parser = argparse.ArgumentParser(description="自我對弈訓練迴圈（Phase 2 §7）")
@@ -735,6 +794,13 @@ def main() -> None:
     )
     parser.add_argument("--gate-rounds", type=int, default=60, help="SPRT 最多打幾輪")
     parser.add_argument("--buffer-dir", type=str, default=SELFPLAY_DIR, help="replay buffer 目錄")
+    parser.add_argument(
+        "--candidate-name", type=str, default=CANDIDATE_FILE_NAME,
+        help="持續訓練的候選模型檔名（放在 models/ 底下）",
+    )
+    parser.add_argument(
+        "--log-name", type=str, default=LOG_FILE_NAME, help="統計 csv 的檔名（放在 logs/ 底下）",
+    )
     parser.add_argument("--no-train", action="store_true", help="只產生對局，不訓練")
     parser.add_argument(
         "--no-gate", action="store_true",
@@ -759,13 +825,7 @@ def main() -> None:
     if args.games is None:
         args.games = int((cfg.selfplay or {}).get("games_per_iteration", 500))
     if args.smoke_test:
-        args.games, args.train_steps, args.simulations = 4, 50, 100
-        args.batch_size = min(args.batch_size, 64)
-        # 用另一個 buffer 目錄，才不會把煙霧測試的爛資料混進正式的 replay buffer
-        args.buffer_dir = SELFPLAY_DIR + "_smoke"
-        args.keep_best = True
-        args.from_best = True      # 煙霧測試不要接續正式的候選模型
-        print("[smoke-test] 4 局、100 模擬、50 步訓練、跳過 SPRT、不動 best.pt")
+        apply_smoke_test_overrides(args)
 
     buffer_dir = cfg.resolve_path(args.buffer_dir)
     print(f"裝置        : {device}")
@@ -777,7 +837,7 @@ def main() -> None:
     for i in range(args.iterations):
         run_iteration(existing + i + 1, cfg, device, args)
 
-    print(f"\n完成。統計在 logs/{LOG_FILE_NAME}")
+    print(f"\n完成。統計在 logs/{args.log_name}")
 
 
 if __name__ == "__main__":
